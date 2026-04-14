@@ -51,6 +51,8 @@ function connectedToHome(board, player) {
 
 function getValidPlacements(board, player) {
   const homeRow = player === 'red' ? 0 : SIZE - 1;
+  const minRow = player === 'red' ? 0 : SIZE - 4;
+  const maxRow = player === 'red' ? 3 : SIZE - 1;
   const valid = new Set();
   for (let c = 0; c < SIZE; c++) {
     if (!board[homeRow][c]) valid.add(homeRow * SIZE + c);
@@ -58,7 +60,7 @@ function getValidPlacements(board, player) {
   for (const [r, c] of connectedToHome(board, player)) {
     for (const [dr, dc] of DIRS) {
       const nr = r + dr, nc = c + dc;
-      if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && !board[nr][nc]) {
+      if (nr >= minRow && nr <= maxRow && nc >= 0 && nc < SIZE && !board[nr][nc]) {
         valid.add(nr * SIZE + nc);
       }
     }
