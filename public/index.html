@@ -53,13 +53,28 @@ h1 { margin-bottom: 8px; }
   height: var(--cell);
   background: #dfc89a;
   position: relative;
+  z-index: 0;
 }
 .cell.clickable { cursor: pointer; }
 .cell.red-cube { background: #c62828; }
 .cell.black-cube { background: #333; }
 .cell.valid-place { background: #a5d6a7; cursor: pointer; }
 .cell.move-target { background: #90caf9; cursor: pointer; }
-.cell.selected { box-shadow: inset 0 0 0 3px #ffd600; z-index: 1; }
+/* Group outline: single pseudo-element with per-side borders */
+.cell.sel::before, .cell.lm::before {
+  content: ''; position: absolute; inset: -1px; z-index: 2; pointer-events: none;
+  border: 0 solid transparent;
+}
+.cell.sel { z-index: 1; }
+.cell.lm { z-index: 1; }
+.cell.sel.hl-top::before    { border-top: 3px solid #ffd600; }
+.cell.sel.hl-bottom::before { border-bottom: 3px solid #ffd600; }
+.cell.sel.hl-left::before   { border-left: 3px solid #ffd600; }
+.cell.sel.hl-right::before  { border-right: 3px solid #ffd600; }
+.cell.lm.hl-top::before    { border-top: 3px solid #fff; }
+.cell.lm.hl-bottom::before { border-bottom: 3px solid #fff; }
+.cell.lm.hl-left::before   { border-left: 3px solid #fff; }
+.cell.lm.hl-right::before  { border-right: 3px solid #fff; }
 .cell.home-red { background: #e8cfc0; }
 .cell.home-black { background: #c8c8c8; }
 .cell.terr-red { background: #ffcdd2; }
@@ -214,6 +229,7 @@ const SIZE = 12;
 let board, currentPlayer, consecutivePasses, phase, selectedGroup, territoryMap, message, moveTargets;
 let mode = null;       // 'local' | 'online' | 'replay'
 let moveLog = [];
+let lastMoveCells = new Set(); // cell IDs (r*SIZE+c) of the last placed/moved piece(s)
 // Replay state
 let replayMoves = [], replayIndex = 0, replaySnapshots = [], replayAutoTimer = null;
 let ws = null;         // WebSocket for online
@@ -349,6 +365,15 @@ function sendAction(action) {
 }
 
 function onServerState(data) {
+  // Detect which cells changed to highlight last move
+  if (board && data.board) {
+    const changed = new Set();
+    for (let r = 0; r < SIZE; r++)
+      for (let c = 0; c < SIZE; c++)
+        if (data.board[r][c] && data.board[r][c] !== (board[r]?.[c] || null))
+          changed.add(r * SIZE + c);
+    if (changed.size) lastMoveCells = changed;
+  }
   myRole = data.playerRole;
   board = data.board;
   currentPlayer = data.currentPlayer;
@@ -529,6 +554,7 @@ function initLocal() {
   message = '';
   moveTargets = {};
   moveLog = [];
+  lastMoveCells = new Set();
   render();
 }
 
@@ -559,6 +585,8 @@ function onCellClick(r, c) {
         moveTargets = {};
       } else {
         recordMove(movePrefix() + ' M ' + selectedGroup[0][0] + ',' + selectedGroup[0][1] + ',' + dirName(dr, dc));
+        const n = selectedGroup.length;
+        lastMoveCells = new Set(selectedGroup.map(([r2,c2]) => (r2 + dr*n) * SIZE + (c2 + dc*n)));
         doMoveLocal(selectedGroup, dr, dc);
         selectedGroup = [];
         moveTargets = {};
@@ -595,6 +623,7 @@ function onCellClick(r, c) {
       sendAction({ type: 'place', r, c });
     } else {
       recordMove(movePrefix() + ' P ' + r + ',' + c);
+      lastMoveCells = new Set([r * SIZE + c]);
       board[r][c] = currentPlayer;
       consecutivePasses = 0;
       endTurnLocal();
@@ -839,6 +868,15 @@ function loadSnapshot(idx) {
   territoryMap = snap.territoryMap;
   selectedGroup = [];
   moveTargets = {};
+  // Highlight cells that changed from previous snapshot
+  lastMoveCells = new Set();
+  if (idx > 0) {
+    const prev = replaySnapshots[idx - 1].board;
+    for (let r = 0; r < SIZE; r++)
+      for (let c = 0; c < SIZE; c++)
+        if (snap.board[r][c] && snap.board[r][c] !== prev[r][c])
+          lastMoveCells.add(r * SIZE + c);
+  }
 }
 
 function replayGo(idx) {
@@ -941,7 +979,19 @@ function render() {
         else if (r === SIZE - 1) cell.classList.add('home-black');
       }
 
-      if (selSet.has(id)) cell.classList.add('selected');
+      if (selSet.has(id)) {
+        cell.classList.add('sel');
+        if (!selSet.has((r-1) * SIZE + c)) cell.classList.add('hl-top');
+        if (!selSet.has((r+1) * SIZE + c)) cell.classList.add('hl-bottom');
+        if (!selSet.has(r * SIZE + (c-1))) cell.classList.add('hl-left');
+        if (!selSet.has(r * SIZE + (c+1))) cell.classList.add('hl-right');
+      } else if (lastMoveCells.has(id) && board[r][c]) {
+        cell.classList.add('lm');
+        if (!lastMoveCells.has((r-1) * SIZE + c)) cell.classList.add('hl-top');
+        if (!lastMoveCells.has((r+1) * SIZE + c)) cell.classList.add('hl-bottom');
+        if (!lastMoveCells.has(r * SIZE + (c-1))) cell.classList.add('hl-left');
+        if (!lastMoveCells.has(r * SIZE + (c+1))) cell.classList.add('hl-right');
+      }
 
       if (showInteraction) {
         if (phase === 'play' && (board[r][c] === myColor || vp.has(id))) {
