@@ -173,9 +173,13 @@ export default class GameServer {
   onMessage(msg, sender) {
     let data;
     try { data = JSON.parse(msg); } catch { return; }
+    if (typeof data !== 'object' || data === null || Array.isArray(data)) return;
 
     if (data.type === 'join') {
       const pid = data.playerId;
+      // Validate playerId: must be a short alphanumeric string
+      if (typeof pid !== 'string' || pid.length === 0 || pid.length > 20 || !/^[a-zA-Z0-9]+$/.test(pid)) return;
+
       sender.setState({ playerId: pid });
 
       // Reconnecting player?
@@ -245,6 +249,7 @@ export default class GameServer {
 
     if (data.type === 'place') {
       const { r, c } = data;
+      if (!Number.isInteger(r) || !Number.isInteger(c)) return;
       if (r < 0 || r >= SIZE || c < 0 || c >= SIZE) return;
       if (this.board[r][c]) return;
       if (!getValidPlacements(this.board, this.currentPlayer).has(r * SIZE + c)) return;
@@ -256,6 +261,7 @@ export default class GameServer {
 
     if (data.type === 'move') {
       const { r, c, dr, dc } = data;
+      if (!Number.isInteger(r) || !Number.isInteger(c) || !Number.isInteger(dr) || !Number.isInteger(dc)) return;
       if (r < 0 || r >= SIZE || c < 0 || c >= SIZE) return;
       if (this.board[r][c] !== this.currentPlayer) return;
       // Validate direction is cardinal unit vector
