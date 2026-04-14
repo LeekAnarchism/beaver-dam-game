@@ -155,6 +155,7 @@ button:disabled { opacity: 0.4; cursor: default; }
       <button onclick="startLocal()">Local Multiplayer</button>
       <button onclick="showHost()">Host Game</button>
       <button onclick="showJoin()">Join Game</button>
+      <button onclick="showReplay()">Replay Game</button>
     </div>
     <div id="lobby-host" style="display:none">
       <p>Waiting for opponent...</p>
@@ -172,6 +173,14 @@ button:disabled { opacity: 0.4; cursor: default; }
       <button onclick="doJoin()" style="width:auto;display:inline-block">Join</button>
       <button onclick="backToMenu()" style="width:auto;display:inline-block">Back</button>
       <p id="join-error" style="color:#c62828;margin-top:8px;display:none"></p>
+    </div>
+    <div id="lobby-replay" style="display:none">
+      <p>Paste movelist:</p>
+      <textarea id="replay-input" rows="8" style="width:280px;font-family:monospace;font-size:0.9em;padding:8px;border:1px solid #aaa;border-radius:4px;margin:6px"></textarea>
+      <br>
+      <button onclick="doReplay()" style="width:auto;display:inline-block">Load</button>
+      <button onclick="backToMenu()" style="width:auto;display:inline-block">Back</button>
+      <p id="replay-error" style="color:#c62828;margin-top:8px;display:none"></p>
     </div>
   </div>
 
@@ -203,7 +212,10 @@ const DIRS = [[0,1],[0,-1],[1,0],[-1,0]];
 const SIZE = 12;
 
 let board, currentPlayer, consecutivePasses, phase, selectedGroup, territoryMap, message, moveTargets;
-let mode = null;       // 'local' | 'online'
+let mode = null;       // 'local' | 'online' | 'replay'
+let moveLog = [];
+// Replay state
+let replayMoves = [], replayIndex = 0, replaySnapshots = [], replayAutoTimer = null;
 let ws = null;         // WebSocket for online
 let myRole = null;     // 'red' | 'black' | null
 let playerId = sessionStorage.getItem('beaver-pid');
@@ -229,6 +241,7 @@ function showLobby() {
   document.getElementById('lobby-menu').style.display = '';
   document.getElementById('lobby-host').style.display = 'none';
   document.getElementById('lobby-join').style.display = 'none';
+  document.getElementById('lobby-replay').style.display = 'none';
   if (ws) { ws.close(); ws = null; }
   myRole = null;
   mode = null;
@@ -239,6 +252,7 @@ function backToMenu() {
   document.getElementById('lobby-menu').style.display = '';
   document.getElementById('lobby-host').style.display = 'none';
   document.getElementById('lobby-join').style.display = 'none';
+  document.getElementById('lobby-replay').style.display = 'none';
 }
 
 function startLocal() {
@@ -514,6 +528,7 @@ function initLocal() {
   territoryMap = null;
   message = '';
   moveTargets = {};
+  moveLog = [];
   render();
 }
 
@@ -522,11 +537,12 @@ function initLocal() {
 // ============================================================
 function isMyTurn() {
   if (mode === 'local') return true;
+  if (mode === 'replay') return false;
   return myRole === currentPlayer;
 }
 
 function onCellClick(r, c) {
-  if (phase === 'over' || phase === 'scoring' || phase === 'waiting') return;
+  if (mode === 'replay' || phase === 'over' || phase === 'scoring' || phase === 'waiting') return;
   if (!isMyTurn() && phase !== 'move') return;
 
   // In move phase, only allow if we initiated the selection (our turn)
@@ -542,6 +558,7 @@ function onCellClick(r, c) {
         selectedGroup = [];
         moveTargets = {};
       } else {
+        recordMove(movePrefix() + ' M ' + selectedGroup[0][0] + ',' + selectedGroup[0][1] + ',' + dirName(dr, dc));
         doMoveLocal(selectedGroup, dr, dc);
         selectedGroup = [];
         moveTargets = {};
@@ -577,6 +594,7 @@ function onCellClick(r, c) {
     if (mode === 'online') {
       sendAction({ type: 'place', r, c });
     } else {
+      recordMove(movePrefix() + ' P ' + r + ',' + c);
       board[r][c] = currentPlayer;
       consecutivePasses = 0;
       endTurnLocal();
@@ -615,6 +633,7 @@ function onPass() {
     if (mode === 'online') {
       sendAction({ type: 'pass' });
     } else {
+      recordMove(movePrefix() + ' X');
       consecutivePasses++;
       if (consecutivePasses >= 2) { phase = 'scoring'; render(); return; }
       endTurnLocal();
@@ -627,6 +646,7 @@ function onResign() {
     if (mode === 'online') {
       sendAction({ type: 'resign' });
     } else {
+      recordMove(movePrefix() + ' RESIGN');
       const winner = currentPlayer === 'red' ? 'Black' : 'Red';
       phase = 'over';
       message = `${capitalize(currentPlayer)} resigns. ${winner} wins!`;
@@ -637,13 +657,14 @@ function onResign() {
 
 function onDraw() {
   if (mode === 'online') { sendAction({ type: 'draw' }); }
-  else { phase = 'over'; message = 'Game ended in a draw.'; render(); }
+  else { recordMove('DRAW'); phase = 'over'; message = 'Game ended in a draw.'; render(); }
 }
 
 function onCount() {
   if (mode === 'online') {
     sendAction({ type: 'count' });
   } else {
+    recordMove('COUNT');
     const res = countTerritoryLocal();
     territoryMap = res.map;
     phase = 'over';
@@ -665,16 +686,190 @@ function endTurnLocal() {
 }
 
 function onNewGame() {
+  if (replayAutoTimer) { clearInterval(replayAutoTimer); replayAutoTimer = null; }
   if (mode === 'online') {
     showLobby();
-    // Clear room from URL
     history.replaceState(null, '', location.pathname);
+  } else if (mode === 'replay') {
+    showLobby();
   } else {
     initLocal();
   }
 }
 
 function capitalize(s) { return s[0].toUpperCase() + s.slice(1); }
+
+// ============================================================
+// Move recording
+// ============================================================
+function movePrefix() { return currentPlayer === 'red' ? 'R' : 'B'; }
+function dirName(dr, dc) {
+  if (dr === -1) return 'U';
+  if (dr === 1) return 'D';
+  if (dc === -1) return 'L';
+  return 'R';
+}
+function recordMove(notation) { moveLog.push(notation); }
+
+function showMovelist() {
+  const overlay = document.getElementById('modal-overlay');
+  const msgEl = document.getElementById('modal-msg');
+  const btnsEl = document.getElementById('modal-btns');
+  msgEl.textContent = 'Movelist';
+  btnsEl.innerHTML = '';
+  const ta = document.createElement('textarea');
+  ta.readOnly = true;
+  ta.rows = 12;
+  ta.style.cssText = 'width:260px;font-family:monospace;font-size:0.9em;padding:8px;margin-bottom:10px;display:block';
+  ta.value = moveLog.join('\n');
+  btnsEl.appendChild(ta);
+  const copyBtn = document.createElement('button');
+  copyBtn.textContent = 'Copy';
+  copyBtn.addEventListener('click', () => { navigator.clipboard.writeText(ta.value); copyBtn.textContent = 'Copied!'; });
+  btnsEl.appendChild(copyBtn);
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = 'Close';
+  closeBtn.addEventListener('click', () => overlay.classList.remove('visible'));
+  btnsEl.appendChild(closeBtn);
+  overlay.classList.add('visible');
+}
+
+// ============================================================
+// Replay
+// ============================================================
+function showReplay() {
+  document.getElementById('lobby-menu').style.display = 'none';
+  document.getElementById('lobby-replay').style.display = '';
+  document.getElementById('replay-error').style.display = 'none';
+}
+
+function doReplay() {
+  const text = document.getElementById('replay-input').value.trim();
+  if (!text) {
+    document.getElementById('replay-error').textContent = 'Paste a movelist first.';
+    document.getElementById('replay-error').style.display = '';
+    return;
+  }
+  replayMoves = text.split('\n').map(l => l.trim()).filter(l => l);
+  if (!replayMoves.length) {
+    document.getElementById('replay-error').textContent = 'No moves found.';
+    document.getElementById('replay-error').style.display = '';
+    return;
+  }
+  mode = 'replay';
+  moveLog = replayMoves.slice();
+  replayIndex = 0;
+  replayAutoTimer = null;
+  // Build all snapshots by replaying moves
+  board = Array.from({length: SIZE}, () => Array(SIZE).fill(null));
+  currentPlayer = 'red';
+  consecutivePasses = 0;
+  phase = 'play';
+  territoryMap = null;
+  message = '';
+  replaySnapshots = [{ board: cloneBoard(), currentPlayer, phase, consecutivePasses, message, territoryMap }];
+  for (let i = 0; i < replayMoves.length; i++) {
+    applyReplayMove(replayMoves[i]);
+    replaySnapshots.push({ board: cloneBoard(), currentPlayer, phase, consecutivePasses, message, territoryMap });
+  }
+  // Reset to start
+  replayIndex = 0;
+  loadSnapshot(0);
+  document.getElementById('lobby').classList.add('hidden');
+  document.getElementById('game-area').classList.remove('hidden');
+  render();
+}
+
+function cloneBoard() { return board.map(row => row.slice()); }
+
+function applyReplayMove(line) {
+  const parts = line.split(/\s+/);
+  // DRAW / COUNT have no player prefix
+  if (parts[0] === 'DRAW') {
+    phase = 'over';
+    message = 'Game ended in a draw.';
+    return;
+  }
+  if (parts[0] === 'COUNT') {
+    const res = countTerritoryLocal();
+    territoryMap = res.map;
+    phase = 'over';
+    if (res.redScore > res.blackScore) message = `Red wins! (Red ${res.redScore} \u2013 Black ${res.blackScore})`;
+    else if (res.blackScore > res.redScore) message = `Black wins! (Red ${res.redScore} \u2013 Black ${res.blackScore})`;
+    else message = `Tie! (Red ${res.redScore} \u2013 Black ${res.blackScore})`;
+    return;
+  }
+  // Player-prefixed moves: R/B action ...
+  const player = parts[0] === 'R' ? 'red' : 'black';
+  currentPlayer = player;
+  const action = parts[1];
+  if (action === 'P') {
+    const [r, c] = parts[2].split(',').map(Number);
+    board[r][c] = currentPlayer;
+    consecutivePasses = 0;
+    currentPlayer = currentPlayer === 'red' ? 'black' : 'red';
+  } else if (action === 'M') {
+    const coords = parts[2].split(',');
+    const r = parseInt(coords[0]), c = parseInt(coords[1]);
+    const dir = coords[2];
+    const dr = dir === 'U' ? -1 : dir === 'D' ? 1 : 0;
+    const dc = dir === 'L' ? -1 : dir === 'R' ? 1 : 0;
+    const group = getGroup(r, c);
+    if (group.length) doMoveLocal(group, dr, dc);
+    consecutivePasses = 0;
+    currentPlayer = currentPlayer === 'red' ? 'black' : 'red';
+  } else if (action === 'X') {
+    consecutivePasses++;
+    if (consecutivePasses >= 2) { phase = 'scoring'; return; }
+    currentPlayer = currentPlayer === 'red' ? 'black' : 'red';
+  } else if (action === 'RESIGN') {
+    const winner = currentPlayer === 'red' ? 'Black' : 'Red';
+    phase = 'over';
+    message = `${capitalize(currentPlayer)} resigns. ${winner} wins!`;
+  }
+}
+
+function loadSnapshot(idx) {
+  const snap = replaySnapshots[idx];
+  board = snap.board.map(row => row.slice());
+  currentPlayer = snap.currentPlayer;
+  phase = snap.phase;
+  consecutivePasses = snap.consecutivePasses;
+  message = snap.message;
+  territoryMap = snap.territoryMap;
+  selectedGroup = [];
+  moveTargets = {};
+}
+
+function replayGo(idx) {
+  idx = Math.max(0, Math.min(idx, replaySnapshots.length - 1));
+  replayIndex = idx;
+  loadSnapshot(idx);
+  render();
+}
+
+function replayNext() {
+  if (replayIndex >= replaySnapshots.length - 1) { replayStopAuto(); return; }
+  replayGo(replayIndex + 1);
+}
+
+function replayPrev() { replayGo(replayIndex - 1); }
+function replayStart() { replayGo(0); }
+function replayEnd() { replayGo(replaySnapshots.length - 1); }
+
+function replayPlayAuto() {
+  if (replayAutoTimer) return;
+  replayAutoTimer = setInterval(() => {
+    if (replayIndex >= replaySnapshots.length - 1) { replayStopAuto(); return; }
+    replayNext();
+  }, 1000);
+  render();
+}
+
+function replayStopAuto() {
+  if (replayAutoTimer) { clearInterval(replayAutoTimer); replayAutoTimer = null; }
+  render();
+}
 
 // ============================================================
 // Render
@@ -685,7 +880,16 @@ function render() {
   const controlsEl = document.getElementById('controls');
 
   // Status text
-  if (phase === 'waiting') {
+  if (mode === 'replay') {
+    const total = replaySnapshots.length - 1;
+    if (replayIndex === 0) {
+      statusEl.textContent = `Replay: start (0/${total})`;
+    } else {
+      statusEl.textContent = `Replay ${replayIndex}/${total}: ${replayMoves[replayIndex - 1]}`;
+    }
+    if (phase === 'over') statusEl.textContent += ' \u2014 ' + message;
+    statusEl.style.color = '#333';
+  } else if (phase === 'waiting') {
     statusEl.textContent = 'Waiting for player...';
     statusEl.style.color = '#333';
   } else if (phase === 'over') {
@@ -756,11 +960,24 @@ function render() {
   // Controls
   controlsEl.innerHTML = '';
 
-  if (phase === 'play' && isMyTurn()) {
+  if (mode === 'replay') {
+    const atEnd = replayIndex >= replaySnapshots.length - 1;
+    const atStart = replayIndex === 0;
+    const b1 = btn('|<', replayStart); if (atStart) b1.disabled = true;
+    const b2 = btn('<', replayPrev); if (atStart) b2.disabled = true;
+    const b3 = btn('>', replayNext); if (atEnd) b3.disabled = true;
+    const b4 = btn('>|', replayEnd); if (atEnd) b4.disabled = true;
+    if (replayAutoTimer) {
+      btn('Stop', replayStopAuto);
+    } else {
+      const b5 = btn('Play', replayPlayAuto); if (atEnd) b5.disabled = true;
+    }
+    btn('Movelist', showMovelist);
+    btn('Exit', onNewGame);
+  } else if (phase === 'play' && isMyTurn()) {
     btn('Pass', onPass);
     btn('Resign', onResign);
   } else if (phase === 'play' && !isMyTurn()) {
-    // Opponent's turn — resign still available
     btn('Resign', onResign);
   } else if (phase === 'move') {
     btn('Cancel', onCancel);
@@ -771,6 +988,11 @@ function render() {
     btn('Resume Play', onResume);
   } else if (phase === 'over') {
     btn(mode === 'online' ? 'Leave Game' : 'New Game', onNewGame);
+  }
+
+  // Show Movelist button for local games (not replay, not online)
+  if (mode === 'local' && moveLog.length > 0) {
+    btn('Movelist', showMovelist);
   }
 
   function btn(label, fn) {
