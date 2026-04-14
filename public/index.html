@@ -26,10 +26,20 @@ h1 { margin-bottom: 8px; }
   min-height: 1.4em;
 }
 #board-wrapper {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+  display: inline-block;
+  position: relative;
 }
+.board-dot {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #999;
+}
+.dot-left { left: -10px; }
+.dot-right { right: -10px; }
+.dot-red-line { top: calc(2.5px + 4 * var(--cell)); }
+.dot-black-line { top: calc(6.5px + 8 * var(--cell)); }
 #board {
   display: inline-grid;
   grid-template-columns: repeat(12, var(--cell));
@@ -170,6 +180,10 @@ button:disabled { opacity: 0.4; cursor: default; }
     <div id="status"></div>
     <div id="board-wrapper">
       <div id="board"></div>
+      <div class="board-dot dot-left dot-red-line"></div>
+      <div class="board-dot dot-right dot-red-line"></div>
+      <div class="board-dot dot-left dot-black-line"></div>
+      <div class="board-dot dot-right dot-black-line"></div>
     </div>
     <div id="controls"></div>
     <div id="modal-overlay"><div id="modal"><p id="modal-msg"></p><div id="modal-btns"></div></div></div>
