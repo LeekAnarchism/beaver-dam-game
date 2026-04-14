@@ -62,6 +62,7 @@ h1 { margin-bottom: 8px; }
 .cell.red-cube { background: #c62828; }
 .cell.black-cube { background: #333; }
 .cell.valid-place { background: #a5d6a7; cursor: pointer; }
+.cell.move-target { background: #90caf9; cursor: pointer; }
 .cell.selected { box-shadow: inset 0 0 0 3px #ffd600; z-index: 1; }
 .cell.home-red { background: #e8cfc0; }
 .cell.home-black { background: #c8c8c8; }
@@ -116,7 +117,7 @@ button:disabled { opacity: 0.4; cursor: default; }
 const DIRS = [[0,1],[0,-1],[1,0],[-1,0]];
 const SIZE = 12;
 
-let board, currentPlayer, consecutivePasses, phase, selectedGroup, territoryMap, message;
+let board, currentPlayer, consecutivePasses, phase, selectedGroup, territoryMap, message, moveTargets;
 
 function init() {
   board = Array.from({length: SIZE}, () => Array(SIZE).fill(null));
@@ -126,6 +127,7 @@ function init() {
   selectedGroup = [];
   territoryMap = null;
   message = '';
+  moveTargets = {};
   render();
 }
 
@@ -197,12 +199,31 @@ function canMove(group, dr, dc) {
   const n = group.length;
   const groupSet = new Set(group.map(([r,c]) => r * SIZE + c));
   for (const [r, c] of group) {
-    const nr = r + dr * n, nc = c + dc * n;
-    if (nr < 0 || nr >= SIZE || nc < 0 || nc >= SIZE) return false;
-    const id = nr * SIZE + nc;
-    if (board[nr][nc] && !groupSet.has(id)) return false;
+    // Check every square along the path, not just destination
+    for (let step = 1; step <= n; step++) {
+      const nr = r + dr * step, nc = c + dc * step;
+      if (nr < 0 || nr >= SIZE || nc < 0 || nc >= SIZE) return false;
+      const id = nr * SIZE + nc;
+      if (board[nr][nc] && !groupSet.has(id)) return false;
+    }
   }
   return true;
+}
+
+// Compute destination cells for all valid directions of the selected group
+function computeMoveTargets(group) {
+  const targets = {};
+  if (!group.length) return targets;
+  const n = group.length;
+  for (const [dr, dc] of DIRS) {
+    if (canMove(group, dr, dc)) {
+      for (const [r, c] of group) {
+        const nr = r + dr * n, nc = c + dc * n;
+        targets[nr * SIZE + nc] = { dr, dc };
+      }
+    }
+  }
+  return targets;
 }
 
 function doMove(group, dr, dc) {
@@ -256,8 +277,22 @@ function onCellClick(r, c) {
   if (phase === 'over' || phase === 'scoring') return;
 
   if (phase === 'move') {
+    // Click a move target to execute the move
+    const targetId = r * SIZE + c;
+    if (moveTargets[targetId]) {
+      const { dr, dc } = moveTargets[targetId];
+      doMove(selectedGroup, dr, dc);
+      selectedGroup = [];
+      moveTargets = {};
+      phase = 'play';
+      consecutivePasses = 0;
+      endTurn();
+      return;
+    }
+    // Click own cube to reselect a different group
     if (board[r][c] === currentPlayer) {
       selectedGroup = getGroup(r, c);
+      moveTargets = computeMoveTargets(selectedGroup);
       render();
     }
     return;
@@ -265,6 +300,7 @@ function onCellClick(r, c) {
 
   if (board[r][c] === currentPlayer) {
     selectedGroup = getGroup(r, c);
+    moveTargets = computeMoveTargets(selectedGroup);
     phase = 'move';
     render();
     return;
@@ -277,18 +313,7 @@ function onCellClick(r, c) {
   }
 }
 
-function onDirection(dr, dc) {
-  if (phase !== 'move' || !selectedGroup.length) return;
-  if (canMove(selectedGroup, dr, dc)) {
-    doMove(selectedGroup, dr, dc);
-    selectedGroup = [];
-    phase = 'play';
-    consecutivePasses = 0;
-    endTurn();
-  }
-}
-
-function onCancel() { selectedGroup = []; phase = 'play'; render(); }
+function onCancel() { selectedGroup = []; moveTargets = {}; phase = 'play'; render(); }
 
 function onPass() {
   if (phase !== 'play') return;
@@ -340,7 +365,7 @@ function render() {
     statusEl.textContent = 'Two passes \u2014 resolve the game:';
     statusEl.style.color = '#333';
   } else if (phase === 'move') {
-    statusEl.textContent = `${capitalize(currentPlayer)}: pick direction (group of ${selectedGroup.length})`;
+    statusEl.textContent = `${capitalize(currentPlayer)}: click a destination (group of ${selectedGroup.length})`;
     statusEl.style.color = currentPlayer === 'red' ? '#c62828' : '#333';
   } else {
     statusEl.textContent = `${capitalize(currentPlayer)}'s turn`;
@@ -367,6 +392,8 @@ function render() {
         cell.classList.add('terr-red');
       } else if (phase === 'over' && tm[id] === 'black') {
         cell.classList.add('terr-black');
+      } else if (phase === 'move' && moveTargets[id]) {
+        cell.classList.add('move-target');
       } else if (vp.has(id)) {
         cell.classList.add('valid-place');
       } else if (!board[r][c]) {
@@ -379,7 +406,7 @@ function render() {
       // Cursor
       if (phase === 'play' && (board[r][c] === currentPlayer || vp.has(id))) {
         cell.classList.add('clickable');
-      } else if (phase === 'move' && board[r][c] === currentPlayer) {
+      } else if (phase === 'move' && (board[r][c] === currentPlayer || moveTargets[id])) {
         cell.classList.add('clickable');
       }
 
@@ -396,14 +423,6 @@ function render() {
     btn('Pass', onPass);
     btn('Resign', onResign);
   } else if (phase === 'move') {
-    const arrows = [
-      ['\u2191 Up', -1, 0], ['\u2193 Down', 1, 0],
-      ['\u2190 Left', 0, -1], ['\u2192 Right', 0, 1]
-    ];
-    for (const [label, dr, dc] of arrows) {
-      const b = btn(label, () => onDirection(dr, dc));
-      if (!canMove(selectedGroup, dr, dc)) b.disabled = true;
-    }
     btn('Cancel', onCancel);
   } else if (phase === 'scoring') {
     btn('Count Territory', onCount);
