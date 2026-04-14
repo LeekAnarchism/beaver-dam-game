@@ -1,0 +1,7 @@
+{
+  "name": "beaver-dam-game",
+  "main": "party/server.js",
+  "serve": {
+    "path": "public"
+  }
+}

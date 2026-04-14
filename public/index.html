@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Beaver Dam</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: system-ui, sans-serif;
+  display: flex;
+  justify-content: center;
+  padding: 20px;
+  background: #f5f5f5;
+  user-select: none;
+}
+#app { text-align: center; }
+h1 { margin-bottom: 8px; }
+#status {
+  margin-bottom: 8px;
+  font-size: 1.1em;
+  font-weight: bold;
+  min-height: 1.4em;
+}
+#board-wrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+#board {
+  display: inline-grid;
+  grid-template-columns: repeat(12, 40px);
+  grid-template-rows: repeat(12, 40px);
+  gap: 1px;
+  background: #888;
+  border: 2px solid #888;
+}
+.cell {
+  width: 40px;
+  height: 40px;
+  background: #dfc89a;
+  position: relative;
+}
+.cell.clickable { cursor: pointer; }
+.cell.red-cube { background: #c62828; }
+.cell.black-cube { background: #333; }
+.cell.valid-place { background: #a5d6a7; cursor: pointer; }
+.cell.move-target { background: #90caf9; cursor: pointer; }
+.cell.selected { box-shadow: inset 0 0 0 3px #ffd600; z-index: 1; }
+.cell.home-red { background: #e8cfc0; }
+.cell.home-black { background: #c8c8c8; }
+.cell.terr-red { background: #ffcdd2; }
+.cell.terr-black { background: #bdbdbd; }
+#controls {
+  margin-top: 10px;
+  min-height: 40px;
+}
+button {
+  padding: 6px 14px;
+  margin: 3px;
+  font-size: 0.95em;
+  cursor: pointer;
+  border: 1px solid #aaa;
+  border-radius: 4px;
+  background: #fff;
+}
+button:hover:not(:disabled) { background: #eee; }
+button:disabled { opacity: 0.4; cursor: default; }
+#info {
+  margin-top: 12px;
+  font-size: 0.85em;
+  color: #666;
+  max-width: 500px;
+  display: inline-block;
+  text-align: left;
+  line-height: 1.5;
+}
+#modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.35);
+  z-index: 10;
+  justify-content: center;
+  align-items: center;
+}
+#modal-overlay.visible { display: flex; }
+#modal {
+  background: #fff;
+  border: 1px solid #aaa;
+  border-radius: 6px;
+  padding: 20px 28px;
+  text-align: center;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+}
+#modal p { margin-bottom: 14px; font-size: 1.05em; }
+
+/* Lobby */
+#lobby { margin-top: 20px; }
+#lobby button { display: block; margin: 8px auto; width: 220px; padding: 10px; font-size: 1em; }
+#lobby input {
+  padding: 8px 12px;
+  font-size: 1em;
+  border: 1px solid #aaa;
+  border-radius: 4px;
+  width: 160px;
+  text-align: center;
+  margin: 6px;
+}
+#lobby .player-id { color: #888; font-size: 0.9em; margin-bottom: 10px; }
+#lobby .invite-box {
+  margin: 12px auto;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  max-width: 360px;
+}
+#lobby .invite-box code {
+  display: block;
+  font-size: 1.3em;
+  letter-spacing: 2px;
+  margin: 6px 0;
+}
+#lobby .invite-link {
+  font-size: 0.85em;
+  color: #555;
+  word-break: break-all;
+}
+
+#game-area.hidden, #lobby.hidden { display: none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <h1>Beaver Dam</h1>
+
+  <!-- Lobby -->
+  <div id="lobby">
+    <div class="player-id">Your ID: <b id="my-id"></b></div>
+    <div id="lobby-menu">
+      <button onclick="startLocal()">Local Multiplayer</button>
+      <button onclick="showHost()">Host Game</button>
+      <button onclick="showJoin()">Join Game</button>
+    </div>
+    <div id="lobby-host" style="display:none">
+      <p>Waiting for opponent...</p>
+      <div class="invite-box">
+        Room code: <code id="room-code-display"></code>
+        <div class="invite-link" id="invite-link-display"></div>
+        <button onclick="copyInvite()" style="width:auto;display:inline-block;margin-top:6px">Copy Link</button>
+      </div>
+      <button onclick="backToMenu()" style="width:auto">Back</button>
+    </div>
+    <div id="lobby-join" style="display:none">
+      <p>Enter room code:</p>
+      <input id="join-code-input" maxlength="6" placeholder="e.g. A3F9K2">
+      <br>
+      <button onclick="doJoin()" style="width:auto;display:inline-block">Join</button>
+      <button onclick="backToMenu()" style="width:auto;display:inline-block">Back</button>
+      <p id="join-error" style="color:#c62828;margin-top:8px;display:none"></p>
+    </div>
+  </div>
+
+  <!-- Game -->
+  <div id="game-area" class="hidden">
+    <div id="status"></div>
+    <div id="board-wrapper">
+      <div id="board"></div>
+    </div>
+    <div id="controls"></div>
+    <div id="modal-overlay"><div id="modal"><p id="modal-msg"></p><div id="modal-btns"></div></div></div>
+    <div id="info">
+      <b>How to play:</b> Place cubes on your home row or adjacent to cubes connected to it.
+      Click your cubes to select a group and move it (the group slides N squares, where N = group size).
+      After two consecutive passes, count territory to determine the winner.
+    </div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// Constants & shared state
+// ============================================================
+const DIRS = [[0,1],[0,-1],[1,0],[-1,0]];
+const SIZE = 12;
+
+let board, currentPlayer, consecutivePasses, phase, selectedGroup, territoryMap, message, moveTargets;
+let mode = null;       // 'local' | 'online'
+let ws = null;         // WebSocket for online
+let myRole = null;     // 'red' | 'black' | null
+let playerId = sessionStorage.getItem('beaver-pid');
+if (!playerId) {
+  playerId = String(Math.floor(10000 + Math.random() * 90000));
+  sessionStorage.setItem('beaver-pid', playerId);
+}
+document.getElementById('my-id').textContent = playerId;
+
+// Auto-join if URL has ?room=
+const urlRoom = new URLSearchParams(location.search).get('room');
+if (urlRoom) {
+  // Show join screen pre-filled after DOM ready
+  setTimeout(() => { showJoin(urlRoom); }, 0);
+}
+
+// ============================================================
+// Lobby
+// ============================================================
+function showLobby() {
+  document.getElementById('lobby').classList.remove('hidden');
+  document.getElementById('game-area').classList.add('hidden');
+  document.getElementById('lobby-menu').style.display = '';
+  document.getElementById('lobby-host').style.display = 'none';
+  document.getElementById('lobby-join').style.display = 'none';
+  if (ws) { ws.close(); ws = null; }
+  myRole = null;
+  mode = null;
+}
+
+function backToMenu() {
+  if (ws) { ws.close(); ws = null; }
+  document.getElementById('lobby-menu').style.display = '';
+  document.getElementById('lobby-host').style.display = 'none';
+  document.getElementById('lobby-join').style.display = 'none';
+}
+
+function startLocal() {
+  mode = 'local';
+  document.getElementById('lobby').classList.add('hidden');
+  document.getElementById('game-area').classList.remove('hidden');
+  initLocal();
+}
+
+function generateRoomCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  return code;
+}
+
+function showHost() {
+  const code = generateRoomCode();
+  document.getElementById('lobby-menu').style.display = 'none';
+  document.getElementById('lobby-host').style.display = '';
+  document.getElementById('room-code-display').textContent = code;
+  const link = location.origin + location.pathname + '?room=' + code;
+  document.getElementById('invite-link-display').textContent = link;
+  // Update URL without reload
+  history.replaceState(null, '', '?room=' + code);
+  connectOnline(code);
+}
+
+function copyInvite() {
+  const link = document.getElementById('invite-link-display').textContent;
+  navigator.clipboard.writeText(link);
+}
+
+function showJoin(prefill) {
+  document.getElementById('lobby-menu').style.display = 'none';
+  document.getElementById('lobby-join').style.display = '';
+  document.getElementById('join-error').style.display = 'none';
+  if (prefill) {
+    document.getElementById('join-code-input').value = prefill;
+  }
+}
+
+function doJoin() {
+  const code = document.getElementById('join-code-input').value.trim().toUpperCase();
+  if (!code || code.length < 4) {
+    document.getElementById('join-error').textContent = 'Enter a valid room code.';
+    document.getElementById('join-error').style.display = '';
+    return;
+  }
+  history.replaceState(null, '', '?room=' + code);
+  connectOnline(code);
+}
+
+// ============================================================
+// Online connection
+// ============================================================
+let reconnectTimer = null;
+let currentRoomCode = null;
+
+function connectOnline(roomCode) {
+  currentRoomCode = roomCode;
+  if (ws) ws.close();
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = `${proto}//${location.host}/parties/main/${roomCode}`;
+  ws = new WebSocket(url);
+
+  ws.addEventListener('open', () => {
+    ws.send(JSON.stringify({ type: 'join', playerId }));
+  });
+
+  ws.addEventListener('message', (e) => {
+    let data;
+    try { data = JSON.parse(e.data); } catch { return; }
+    if (data.type === 'state') {
+      onServerState(data);
+    }
+  });
+
+  ws.addEventListener('close', () => {
+    // Auto-reconnect if we were in a game
+    if (mode === 'online' && currentRoomCode) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(() => connectOnline(currentRoomCode), 1500);
+    }
+  });
+
+  ws.addEventListener('error', () => {});
+}
+
+function sendAction(action) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(action));
+  }
+}
+
+function onServerState(data) {
+  myRole = data.playerRole;
+  board = data.board;
+  currentPlayer = data.currentPlayer;
+  consecutivePasses = data.consecutivePasses;
+  message = data.message || '';
+  territoryMap = data.territoryMap;
+
+  // If game hasn't started (waiting for opponent)
+  if (data.phase === 'waiting') {
+    // Stay on lobby host screen
+    phase = 'waiting';
+    return;
+  }
+
+  // Transition from lobby to game
+  if (mode !== 'online') {
+    mode = 'online';
+    document.getElementById('lobby').classList.add('hidden');
+    document.getElementById('game-area').classList.remove('hidden');
+  }
+
+  phase = data.phase;
+  // Clear client-side selection on state update
+  selectedGroup = [];
+  moveTargets = {};
+  render();
+}
+
+// ============================================================
+// Game logic (used for local mode)
+// ============================================================
+function getGroup(r, c) {
+  const color = board[r][c];
+  if (!color) return [];
+  const visited = new Set();
+  const queue = [[r, c]];
+  visited.add(r * SIZE + c);
+  while (queue.length) {
+    const [cr, cc] = queue.shift();
+    for (const [dr, dc] of DIRS) {
+      const nr = cr + dr, nc = cc + dc;
+      const id = nr * SIZE + nc;
+      if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && !visited.has(id) && board[nr][nc] === color) {
+        visited.add(id);
+        queue.push([nr, nc]);
+      }
+    }
+  }
+  return [...visited].map(id => [Math.floor(id / SIZE), id % SIZE]);
+}
+
+function connectedToHome(player) {
+  const homeRow = player === 'red' ? 0 : SIZE - 1;
+  const visited = new Set();
+  const queue = [];
+  for (let c = 0; c < SIZE; c++) {
+    if (board[homeRow][c] === player) {
+      visited.add(homeRow * SIZE + c);
+      queue.push([homeRow, c]);
+    }
+  }
+  while (queue.length) {
+    const [cr, cc] = queue.shift();
+    for (const [dr, dc] of DIRS) {
+      const nr = cr + dr, nc = cc + dc;
+      const id = nr * SIZE + nc;
+      if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && !visited.has(id) && board[nr][nc] === player) {
+        visited.add(id);
+        queue.push([nr, nc]);
+      }
+    }
+  }
+  return [...visited].map(id => [Math.floor(id / SIZE), id % SIZE]);
+}
+
+function getValidPlacements(player) {
+  const homeRow = player === 'red' ? 0 : SIZE - 1;
+  const valid = new Set();
+  for (let c = 0; c < SIZE; c++) {
+    if (!board[homeRow][c]) valid.add(homeRow * SIZE + c);
+  }
+  for (const [r, c] of connectedToHome(player)) {
+    for (const [dr, dc] of DIRS) {
+      const nr = r + dr, nc = c + dc;
+      if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && !board[nr][nc]) {
+        valid.add(nr * SIZE + nc);
+      }
+    }
+  }
+  return valid;
+}
+
+function canMove(group, dr, dc) {
+  const n = group.length;
+  const groupSet = new Set(group.map(([r,c]) => r * SIZE + c));
+  for (const [r, c] of group) {
+    for (let step = 1; step <= n; step++) {
+      const nr = r + dr * step, nc = c + dc * step;
+      if (nr < 0 || nr >= SIZE || nc < 0 || nc >= SIZE) return false;
+      const id = nr * SIZE + nc;
+      if (board[nr][nc] && !groupSet.has(id)) return false;
+    }
+  }
+  return true;
+}
+
+function computeMoveTargets(group) {
+  const targets = {};
+  if (!group.length) return targets;
+  const n = group.length;
+  for (const [dr, dc] of DIRS) {
+    if (canMove(group, dr, dc)) {
+      for (const [r, c] of group) {
+        const nr = r + dr * n, nc = c + dc * n;
+        targets[nr * SIZE + nc] = { dr, dc };
+      }
+    }
+  }
+  return targets;
+}
+
+function doMoveLocal(group, dr, dc) {
+  const n = group.length;
+  const color = board[group[0][0]][group[0][1]];
+  for (const [r, c] of group) board[r][c] = null;
+  for (const [r, c] of group) board[r + dr * n][c + dc * n] = color;
+}
+
+function countTerritoryLocal() {
+  function flood(homeRow) {
+    const reached = new Set();
+    const queue = [];
+    for (let c = 0; c < SIZE; c++) {
+      if (!board[homeRow][c]) {
+        reached.add(homeRow * SIZE + c);
+        queue.push([homeRow, c]);
+      }
+    }
+    while (queue.length) {
+      const [cr, cc] = queue.shift();
+      for (const [dr, dc] of DIRS) {
+        const nr = cr + dr, nc = cc + dc;
+        const id = nr * SIZE + nc;
+        if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && !reached.has(id) && !board[nr][nc]) {
+          reached.add(id);
+          queue.push([nr, nc]);
+        }
+      }
+    }
+    return reached;
+  }
+  const redReach = flood(0);
+  const blackReach = flood(SIZE - 1);
+  const tMap = {};
+  let rs = 0, bs = 0;
+  for (const id of redReach) {
+    if (blackReach.has(id)) tMap[id] = 'neutral';
+    else { tMap[id] = 'red'; rs++; }
+  }
+  for (const id of blackReach) {
+    if (!redReach.has(id)) { tMap[id] = 'black'; bs++; }
+  }
+  return { redScore: rs, blackScore: bs, map: tMap };
+}
+
+// ============================================================
+// Init
+// ============================================================
+function initLocal() {
+  board = Array.from({length: SIZE}, () => Array(SIZE).fill(null));
+  currentPlayer = 'red';
+  consecutivePasses = 0;
+  phase = 'play';
+  selectedGroup = [];
+  territoryMap = null;
+  message = '';
+  moveTargets = {};
+  render();
+}
+
+// ============================================================
+// Actions — branch on local vs online
+// ============================================================
+function isMyTurn() {
+  if (mode === 'local') return true;
+  return myRole === currentPlayer;
+}
+
+function onCellClick(r, c) {
+  if (phase === 'over' || phase === 'scoring' || phase === 'waiting') return;
+  if (!isMyTurn() && phase !== 'move') return;
+
+  // In move phase, only allow if we initiated the selection (our turn)
+  if (phase === 'move') {
+    if (!isMyTurn()) return;
+
+    const targetId = r * SIZE + c;
+    if (moveTargets[targetId]) {
+      const { dr, dc } = moveTargets[targetId];
+      if (mode === 'online') {
+        // Send move: use first cell of selectedGroup to identify the group
+        sendAction({ type: 'move', r: selectedGroup[0][0], c: selectedGroup[0][1], dr, dc });
+        selectedGroup = [];
+        moveTargets = {};
+      } else {
+        doMoveLocal(selectedGroup, dr, dc);
+        selectedGroup = [];
+        moveTargets = {};
+        phase = 'play';
+        consecutivePasses = 0;
+        endTurnLocal();
+      }
+      return;
+    }
+
+    // Click own cube to reselect
+    const myColor = mode === 'online' ? myRole : currentPlayer;
+    if (board[r][c] === myColor) {
+      selectedGroup = getGroup(r, c);
+      moveTargets = computeMoveTargets(selectedGroup);
+      render();
+    }
+    return;
+  }
+
+  // Play phase
+  const myColor = mode === 'online' ? myRole : currentPlayer;
+
+  if (board[r][c] === myColor) {
+    selectedGroup = getGroup(r, c);
+    moveTargets = computeMoveTargets(selectedGroup);
+    phase = 'move';
+    render();
+    return;
+  }
+
+  if (!board[r][c] && getValidPlacements(currentPlayer).has(r * SIZE + c)) {
+    if (mode === 'online') {
+      sendAction({ type: 'place', r, c });
+    } else {
+      board[r][c] = currentPlayer;
+      consecutivePasses = 0;
+      endTurnLocal();
+    }
+  }
+}
+
+function onCancel() {
+  selectedGroup = [];
+  moveTargets = {};
+  // In online mode, phase is set by server; locally revert to play
+  if (mode === 'local') phase = 'play';
+  else phase = 'play'; // client-side revert, server still in 'play'
+  render();
+}
+
+function confirmDialog(msg, onYes) {
+  const overlay = document.getElementById('modal-overlay');
+  document.getElementById('modal-msg').textContent = msg;
+  const btns = document.getElementById('modal-btns');
+  btns.innerHTML = '';
+  const yes = document.createElement('button');
+  yes.textContent = 'Yes';
+  yes.addEventListener('click', () => { overlay.classList.remove('visible'); onYes(); });
+  const no = document.createElement('button');
+  no.textContent = 'No';
+  no.addEventListener('click', () => overlay.classList.remove('visible'));
+  btns.appendChild(yes);
+  btns.appendChild(no);
+  overlay.classList.add('visible');
+}
+
+function onPass() {
+  if (phase !== 'play' || !isMyTurn()) return;
+  confirmDialog('Are you sure you want to pass?', () => {
+    if (mode === 'online') {
+      sendAction({ type: 'pass' });
+    } else {
+      consecutivePasses++;
+      if (consecutivePasses >= 2) { phase = 'scoring'; render(); return; }
+      endTurnLocal();
+    }
+  });
+}
+
+function onResign() {
+  confirmDialog('Are you sure you want to resign?', () => {
+    if (mode === 'online') {
+      sendAction({ type: 'resign' });
+    } else {
+      const winner = currentPlayer === 'red' ? 'Black' : 'Red';
+      phase = 'over';
+      message = `${capitalize(currentPlayer)} resigns. ${winner} wins!`;
+      render();
+    }
+  });
+}
+
+function onDraw() {
+  if (mode === 'online') { sendAction({ type: 'draw' }); }
+  else { phase = 'over'; message = 'Game ended in a draw.'; render(); }
+}
+
+function onCount() {
+  if (mode === 'online') {
+    sendAction({ type: 'count' });
+  } else {
+    const res = countTerritoryLocal();
+    territoryMap = res.map;
+    phase = 'over';
+    if (res.redScore > res.blackScore) message = `Red wins! (Red ${res.redScore} \u2013 Black ${res.blackScore})`;
+    else if (res.blackScore > res.redScore) message = `Black wins! (Red ${res.redScore} \u2013 Black ${res.blackScore})`;
+    else message = `Tie! (Red ${res.redScore} \u2013 Black ${res.blackScore})`;
+    render();
+  }
+}
+
+function onResume() {
+  if (mode === 'online') { sendAction({ type: 'resume' }); }
+  else { phase = 'play'; consecutivePasses = 0; render(); }
+}
+
+function endTurnLocal() {
+  currentPlayer = currentPlayer === 'red' ? 'black' : 'red';
+  render();
+}
+
+function onNewGame() {
+  if (mode === 'online') {
+    showLobby();
+    // Clear room from URL
+    history.replaceState(null, '', location.pathname);
+  } else {
+    initLocal();
+  }
+}
+
+function capitalize(s) { return s[0].toUpperCase() + s.slice(1); }
+
+// ============================================================
+// Render
+// ============================================================
+function render() {
+  const statusEl = document.getElementById('status');
+  const boardEl = document.getElementById('board');
+  const controlsEl = document.getElementById('controls');
+
+  // Status text
+  if (phase === 'waiting') {
+    statusEl.textContent = 'Waiting for player...';
+    statusEl.style.color = '#333';
+  } else if (phase === 'over') {
+    statusEl.textContent = message;
+    statusEl.style.color = '#333';
+  } else if (phase === 'scoring') {
+    statusEl.textContent = 'Two passes \u2014 resolve the game:';
+    statusEl.style.color = '#333';
+  } else if (phase === 'move') {
+    statusEl.textContent = `${capitalize(currentPlayer)}: click a destination (group of ${selectedGroup.length})`;
+    statusEl.style.color = currentPlayer === 'red' ? '#c62828' : '#333';
+  } else if (phase === 'play') {
+    let turnText = `${capitalize(currentPlayer)}'s turn`;
+    if (mode === 'online') {
+      turnText += isMyTurn() ? ' (you)' : ' (opponent)';
+    }
+    statusEl.textContent = turnText;
+    statusEl.style.color = currentPlayer === 'red' ? '#c62828' : '#333';
+  }
+
+  // Only show valid placements if it's our turn
+  const showInteraction = isMyTurn() && (phase === 'play' || phase === 'move');
+  const myColor = mode === 'online' ? myRole : currentPlayer;
+  const vp = (phase === 'play' && showInteraction) ? getValidPlacements(currentPlayer) : new Set();
+  const selSet = new Set(selectedGroup.map(([r,c]) => r * SIZE + c));
+  const tm = territoryMap || {};
+
+  boardEl.innerHTML = '';
+  for (let r = 0; r < SIZE; r++) {
+    for (let c = 0; c < SIZE; c++) {
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      const id = r * SIZE + c;
+
+      if (board[r][c] === 'red') {
+        cell.classList.add('red-cube');
+      } else if (board[r][c] === 'black') {
+        cell.classList.add('black-cube');
+      } else if (phase === 'over' && tm[id] === 'red') {
+        cell.classList.add('terr-red');
+      } else if (phase === 'over' && tm[id] === 'black') {
+        cell.classList.add('terr-black');
+      } else if (phase === 'move' && moveTargets[id]) {
+        cell.classList.add('move-target');
+      } else if (vp.has(id)) {
+        cell.classList.add('valid-place');
+      } else if (!board[r][c]) {
+        if (r === 0) cell.classList.add('home-red');
+        else if (r === SIZE - 1) cell.classList.add('home-black');
+      }
+
+      if (selSet.has(id)) cell.classList.add('selected');
+
+      if (showInteraction) {
+        if (phase === 'play' && (board[r][c] === myColor || vp.has(id))) {
+          cell.classList.add('clickable');
+        } else if (phase === 'move' && (board[r][c] === myColor || moveTargets[id])) {
+          cell.classList.add('clickable');
+        }
+      }
+
+      const row = r, col = c;
+      cell.addEventListener('click', () => onCellClick(row, col));
+      boardEl.appendChild(cell);
+    }
+  }
+
+  // Controls
+  controlsEl.innerHTML = '';
+
+  if (phase === 'play' && isMyTurn()) {
+    btn('Pass', onPass);
+    btn('Resign', onResign);
+  } else if (phase === 'play' && !isMyTurn()) {
+    // Opponent's turn — resign still available
+    btn('Resign', onResign);
+  } else if (phase === 'move') {
+    btn('Cancel', onCancel);
+  } else if (phase === 'scoring') {
+    btn('Count Territory', onCount);
+    btn('Declare Draw', onDraw);
+    btn('Resign', onResign);
+    btn('Resume Play', onResume);
+  } else if (phase === 'over') {
+    btn(mode === 'online' ? 'Leave Game' : 'New Game', onNewGame);
+  }
+
+  function btn(label, fn) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.addEventListener('click', fn);
+    controlsEl.appendChild(b);
+    return b;
+  }
+}
+</script>
+</body>
+</html>

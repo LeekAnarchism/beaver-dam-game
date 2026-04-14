@@ -1,0 +1,12 @@
+{
+  "name": "beaver-dam-game",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "partykit dev",
+    "deploy": "partykit deploy"
+  },
+  "dependencies": {
+    "partykit": "latest"
+  }
+}
