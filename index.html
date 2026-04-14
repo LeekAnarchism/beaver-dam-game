@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Beaver Dam</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: system-ui, sans-serif;
+  display: flex;
+  justify-content: center;
+  padding: 20px;
+  background: #f5f5f5;
+  user-select: none;
+}
+#app { text-align: center; }
+h1 { margin-bottom: 8px; }
+#status {
+  margin-bottom: 8px;
+  font-size: 1.1em;
+  font-weight: bold;
+  min-height: 1.4em;
+}
+#board-wrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.row-label {
+  font-size: 11px;
+  color: #999;
+  width: 18px;
+  text-align: right;
+}
+.row-label-right {
+  font-size: 11px;
+  color: #999;
+  width: 18px;
+  text-align: left;
+}
+#board-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+#board {
+  display: inline-grid;
+  grid-template-columns: repeat(12, 40px);
+  grid-template-rows: repeat(12, 40px);
+  gap: 1px;
+  background: #888;
+  border: 2px solid #888;
+}
+.cell {
+  width: 40px;
+  height: 40px;
+  background: #dfc89a;
+  position: relative;
+}
+.cell.clickable { cursor: pointer; }
+.cell.red-cube { background: #c62828; }
+.cell.black-cube { background: #333; }
+.cell.valid-place { background: #a5d6a7; cursor: pointer; }
+.cell.selected { box-shadow: inset 0 0 0 3px #ffd600; z-index: 1; }
+.cell.home-red { background: #e8cfc0; }
+.cell.home-black { background: #c8c8c8; }
+.cell.terr-red { background: #ffcdd2; }
+.cell.terr-black { background: #bdbdbd; }
+#controls {
+  margin-top: 10px;
+  min-height: 40px;
+}
+button {
+  padding: 6px 14px;
+  margin: 3px;
+  font-size: 0.95em;
+  cursor: pointer;
+  border: 1px solid #aaa;
+  border-radius: 4px;
+  background: #fff;
+}
+button:hover:not(:disabled) { background: #eee; }
+button:disabled { opacity: 0.4; cursor: default; }
+#info {
+  margin-top: 12px;
+  font-size: 0.85em;
+  color: #666;
+  max-width: 500px;
+  display: inline-block;
+  text-align: left;
+  line-height: 1.5;
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <h1>Beaver Dam</h1>
+  <div id="status"></div>
+  <div id="board-wrapper">
+    <div id="labels-left"></div>
+    <div id="board-col">
+      <div id="board"></div>
+    </div>
+    <div id="labels-right"></div>
+  </div>
+  <div id="controls"></div>
+  <div id="info">
+    <b>How to play:</b> Place cubes on your home row or adjacent to cubes connected to it.
+    Click your cubes to select a group and move it (the group slides N squares, where N = group size).
+    After two consecutive passes, count territory to determine the winner.
+  </div>
+</div>
+
+<script>
+const DIRS = [[0,1],[0,-1],[1,0],[-1,0]];
+const SIZE = 12;
+
+let board, currentPlayer, consecutivePasses, phase, selectedGroup, territoryMap, message;
+
+function init() {
+  board = Array.from({length: SIZE}, () => Array(SIZE).fill(null));
+  currentPlayer = 'red';
+  consecutivePasses = 0;
+  phase = 'play';
+  selectedGroup = [];
+  territoryMap = null;
+  message = '';
+  render();
+}
+
+// BFS: find connected component of same color from (r,c)
+function getGroup(r, c) {
+  const color = board[r][c];
+  if (!color) return [];
+  const visited = new Set();
+  const queue = [[r, c]];
+  visited.add(r * SIZE + c);
+  while (queue.length) {
+    const [cr, cc] = queue.shift();
+    for (const [dr, dc] of DIRS) {
+      const nr = cr + dr, nc = cc + dc;
+      const id = nr * SIZE + nc;
+      if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && !visited.has(id) && board[nr][nc] === color) {
+        visited.add(id);
+        queue.push([nr, nc]);
+      }
+    }
+  }
+  return [...visited].map(id => [Math.floor(id / SIZE), id % SIZE]);
+}
+
+// BFS: all cubes of player connected to their home row
+function connectedToHome(player) {
+  const homeRow = player === 'red' ? 0 : SIZE - 1;
+  const visited = new Set();
+  const queue = [];
+  for (let c = 0; c < SIZE; c++) {
+    if (board[homeRow][c] === player) {
+      const id = homeRow * SIZE + c;
+      visited.add(id);
+      queue.push([homeRow, c]);
+    }
+  }
+  while (queue.length) {
+    const [cr, cc] = queue.shift();
+    for (const [dr, dc] of DIRS) {
+      const nr = cr + dr, nc = cc + dc;
+      const id = nr * SIZE + nc;
+      if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && !visited.has(id) && board[nr][nc] === player) {
+        visited.add(id);
+        queue.push([nr, nc]);
+      }
+    }
+  }
+  return [...visited].map(id => [Math.floor(id / SIZE), id % SIZE]);
+}
+
+function getValidPlacements(player) {
+  const homeRow = player === 'red' ? 0 : SIZE - 1;
+  const valid = new Set();
+  for (let c = 0; c < SIZE; c++) {
+    if (!board[homeRow][c]) valid.add(homeRow * SIZE + c);
+  }
+  for (const [r, c] of connectedToHome(player)) {
+    for (const [dr, dc] of DIRS) {
+      const nr = r + dr, nc = c + dc;
+      if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && !board[nr][nc]) {
+        valid.add(nr * SIZE + nc);
+      }
+    }
+  }
+  return valid;
+}
+
+function canMove(group, dr, dc) {
+  const n = group.length;
+  const groupSet = new Set(group.map(([r,c]) => r * SIZE + c));
+  for (const [r, c] of group) {
+    const nr = r + dr * n, nc = c + dc * n;
+    if (nr < 0 || nr >= SIZE || nc < 0 || nc >= SIZE) return false;
+    const id = nr * SIZE + nc;
+    if (board[nr][nc] && !groupSet.has(id)) return false;
+  }
+  return true;
+}
+
+function doMove(group, dr, dc) {
+  const n = group.length;
+  const color = board[group[0][0]][group[0][1]];
+  for (const [r, c] of group) board[r][c] = null;
+  for (const [r, c] of group) board[r + dr * n][c + dc * n] = color;
+}
+
+function countTerritory() {
+  function flood(homeRow) {
+    const reached = new Set();
+    const queue = [];
+    for (let c = 0; c < SIZE; c++) {
+      if (!board[homeRow][c]) {
+        const id = homeRow * SIZE + c;
+        reached.add(id);
+        queue.push([homeRow, c]);
+      }
+    }
+    while (queue.length) {
+      const [cr, cc] = queue.shift();
+      for (const [dr, dc] of DIRS) {
+        const nr = cr + dr, nc = cc + dc;
+        const id = nr * SIZE + nc;
+        if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && !reached.has(id) && !board[nr][nc]) {
+          reached.add(id);
+          queue.push([nr, nc]);
+        }
+      }
+    }
+    return reached;
+  }
+  const redReach = flood(0);
+  const blackReach = flood(SIZE - 1);
+  const tMap = {};
+  let rs = 0, bs = 0;
+  for (const id of redReach) {
+    if (blackReach.has(id)) { tMap[id] = 'neutral'; }
+    else { tMap[id] = 'red'; rs++; }
+  }
+  for (const id of blackReach) {
+    if (!redReach.has(id)) { tMap[id] = 'black'; bs++; }
+  }
+  return { redScore: rs, blackScore: bs, map: tMap };
+}
+
+// --- Actions ---
+
+function onCellClick(r, c) {
+  if (phase === 'over' || phase === 'scoring') return;
+
+  if (phase === 'move') {
+    if (board[r][c] === currentPlayer) {
+      selectedGroup = getGroup(r, c);
+      render();
+    }
+    return;
+  }
+
+  if (board[r][c] === currentPlayer) {
+    selectedGroup = getGroup(r, c);
+    phase = 'move';
+    render();
+    return;
+  }
+
+  if (!board[r][c] && getValidPlacements(currentPlayer).has(r * SIZE + c)) {
+    board[r][c] = currentPlayer;
+    consecutivePasses = 0;
+    endTurn();
+  }
+}
+
+function onDirection(dr, dc) {
+  if (phase !== 'move' || !selectedGroup.length) return;
+  if (canMove(selectedGroup, dr, dc)) {
+    doMove(selectedGroup, dr, dc);
+    selectedGroup = [];
+    phase = 'play';
+    consecutivePasses = 0;
+    endTurn();
+  }
+}
+
+function onCancel() { selectedGroup = []; phase = 'play'; render(); }
+
+function onPass() {
+  if (phase !== 'play') return;
+  consecutivePasses++;
+  if (consecutivePasses >= 2) { phase = 'scoring'; render(); return; }
+  endTurn();
+}
+
+function onResign() {
+  const winner = currentPlayer === 'red' ? 'Black' : 'Red';
+  phase = 'over';
+  message = `${capitalize(currentPlayer)} resigns. ${winner} wins!`;
+  render();
+}
+
+function onDraw() { phase = 'over'; message = 'Game ended in a draw.'; render(); }
+
+function onCount() {
+  const res = countTerritory();
+  territoryMap = res.map;
+  phase = 'over';
+  if (res.redScore > res.blackScore) message = `Red wins! (Red ${res.redScore} \u2013 Black ${res.blackScore})`;
+  else if (res.blackScore > res.redScore) message = `Black wins! (Red ${res.redScore} \u2013 Black ${res.blackScore})`;
+  else message = `Tie! (Red ${res.redScore} \u2013 Black ${res.blackScore})`;
+  render();
+}
+
+function onResume() { phase = 'play'; consecutivePasses = 0; render(); }
+
+function endTurn() {
+  currentPlayer = currentPlayer === 'red' ? 'black' : 'red';
+  render();
+}
+
+function capitalize(s) { return s[0].toUpperCase() + s.slice(1); }
+
+// --- Render ---
+
+function render() {
+  const statusEl = document.getElementById('status');
+  const boardEl = document.getElementById('board');
+  const controlsEl = document.getElementById('controls');
+
+  // Status
+  if (phase === 'over') {
+    statusEl.textContent = message;
+    statusEl.style.color = '#333';
+  } else if (phase === 'scoring') {
+    statusEl.textContent = 'Two passes \u2014 resolve the game:';
+    statusEl.style.color = '#333';
+  } else if (phase === 'move') {
+    statusEl.textContent = `${capitalize(currentPlayer)}: pick direction (group of ${selectedGroup.length})`;
+    statusEl.style.color = currentPlayer === 'red' ? '#c62828' : '#333';
+  } else {
+    statusEl.textContent = `${capitalize(currentPlayer)}'s turn`;
+    statusEl.style.color = currentPlayer === 'red' ? '#c62828' : '#333';
+  }
+
+  // Valid placements (only in play phase)
+  const vp = phase === 'play' ? getValidPlacements(currentPlayer) : new Set();
+  const selSet = new Set(selectedGroup.map(([r,c]) => r * SIZE + c));
+  const tm = territoryMap || {};
+
+  boardEl.innerHTML = '';
+  for (let r = 0; r < SIZE; r++) {
+    for (let c = 0; c < SIZE; c++) {
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      const id = r * SIZE + c;
+
+      if (board[r][c] === 'red') {
+        cell.classList.add('red-cube');
+      } else if (board[r][c] === 'black') {
+        cell.classList.add('black-cube');
+      } else if (phase === 'over' && tm[id] === 'red') {
+        cell.classList.add('terr-red');
+      } else if (phase === 'over' && tm[id] === 'black') {
+        cell.classList.add('terr-black');
+      } else if (vp.has(id)) {
+        cell.classList.add('valid-place');
+      } else if (!board[r][c]) {
+        if (r === 0) cell.classList.add('home-red');
+        else if (r === SIZE - 1) cell.classList.add('home-black');
+      }
+
+      if (selSet.has(id)) cell.classList.add('selected');
+
+      // Cursor
+      if (phase === 'play' && (board[r][c] === currentPlayer || vp.has(id))) {
+        cell.classList.add('clickable');
+      } else if (phase === 'move' && board[r][c] === currentPlayer) {
+        cell.classList.add('clickable');
+      }
+
+      const row = r, col = c;
+      cell.addEventListener('click', () => onCellClick(row, col));
+      boardEl.appendChild(cell);
+    }
+  }
+
+  // Controls
+  controlsEl.innerHTML = '';
+
+  if (phase === 'play') {
+    btn('Pass', onPass);
+    btn('Resign', onResign);
+  } else if (phase === 'move') {
+    const arrows = [
+      ['\u2191 Up', -1, 0], ['\u2193 Down', 1, 0],
+      ['\u2190 Left', 0, -1], ['\u2192 Right', 0, 1]
+    ];
+    for (const [label, dr, dc] of arrows) {
+      const b = btn(label, () => onDirection(dr, dc));
+      if (!canMove(selectedGroup, dr, dc)) b.disabled = true;
+    }
+    btn('Cancel', onCancel);
+  } else if (phase === 'scoring') {
+    btn('Count Territory', onCount);
+    btn('Declare Draw', onDraw);
+    btn('Resign', onResign);
+    btn('Resume Play', onResume);
+  } else if (phase === 'over') {
+    btn('New Game', init);
+  }
+
+  function btn(label, fn) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.addEventListener('click', fn);
+    controlsEl.appendChild(b);
+    return b;
+  }
+}
+
+init();
+</script>
+</body>
+</html>
