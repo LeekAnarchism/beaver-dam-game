@@ -92,6 +92,25 @@ button:disabled { opacity: 0.4; cursor: default; }
   text-align: left;
   line-height: 1.5;
 }
+#modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.35);
+  z-index: 10;
+  justify-content: center;
+  align-items: center;
+}
+#modal-overlay.visible { display: flex; }
+#modal {
+  background: #fff;
+  border: 1px solid #aaa;
+  border-radius: 6px;
+  padding: 20px 28px;
+  text-align: center;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+}
+#modal p { margin-bottom: 14px; font-size: 1.05em; }
 </style>
 </head>
 <body>
@@ -106,6 +125,7 @@ button:disabled { opacity: 0.4; cursor: default; }
     <div id="labels-right"></div>
   </div>
   <div id="controls"></div>
+  <div id="modal-overlay"><div id="modal"><p id="modal-msg"></p><div id="modal-btns"></div></div></div>
   <div id="info">
     <b>How to play:</b> Place cubes on your home row or adjacent to cubes connected to it.
     Click your cubes to select a group and move it (the group slides N squares, where N = group size).
@@ -315,18 +335,38 @@ function onCellClick(r, c) {
 
 function onCancel() { selectedGroup = []; moveTargets = {}; phase = 'play'; render(); }
 
+function confirm(msg, onYes) {
+  const overlay = document.getElementById('modal-overlay');
+  document.getElementById('modal-msg').textContent = msg;
+  const btns = document.getElementById('modal-btns');
+  btns.innerHTML = '';
+  const yes = document.createElement('button');
+  yes.textContent = 'Yes';
+  yes.addEventListener('click', () => { overlay.classList.remove('visible'); onYes(); });
+  const no = document.createElement('button');
+  no.textContent = 'No';
+  no.addEventListener('click', () => overlay.classList.remove('visible'));
+  btns.appendChild(yes);
+  btns.appendChild(no);
+  overlay.classList.add('visible');
+}
+
 function onPass() {
   if (phase !== 'play') return;
-  consecutivePasses++;
-  if (consecutivePasses >= 2) { phase = 'scoring'; render(); return; }
-  endTurn();
+  confirm('Are you sure you want to pass?', () => {
+    consecutivePasses++;
+    if (consecutivePasses >= 2) { phase = 'scoring'; render(); return; }
+    endTurn();
+  });
 }
 
 function onResign() {
-  const winner = currentPlayer === 'red' ? 'Black' : 'Red';
-  phase = 'over';
-  message = `${capitalize(currentPlayer)} resigns. ${winner} wins!`;
-  render();
+  confirm(`Are you sure you want to resign?`, () => {
+    const winner = currentPlayer === 'red' ? 'Black' : 'Red';
+    phase = 'over';
+    message = `${capitalize(currentPlayer)} resigns. ${winner} wins!`;
+    render();
+  });
 }
 
 function onDraw() { phase = 'over'; message = 'Game ended in a draw.'; render(); }
