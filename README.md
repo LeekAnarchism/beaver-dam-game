@@ -102,6 +102,12 @@ The strategic core follows from this: you score by completing a dam that cuts op
 from your opponent's side while leaving them connected to yours. A leak anywhere along your wall
 makes the whole region neutral and worthless.
 
+One consequence is easy to miss and worth knowing: because the flood spreads only up, down, left
+and right, **a diagonal chain of cubes seals just as well as a solid row**. A staircase of twelve
+cubes zig-zagging between two rows cuts the board in half exactly as a straight line of twelve
+does. Cubes of *either* colour block the flood, too — so your opponent's wall can form part of the
+barrier that encloses your territory.
+
 Note the edge case: if your home row is *completely full* of cubes, your flood has nowhere to
 start and you score zero. Leave yourself a gap.
 
@@ -162,6 +168,40 @@ and an auto-play button. The format is one move per line:
 
 For online games the movelist is kept by the server and sent with every state update, so it stays
 complete across a reconnect and includes moves the opponent made while you were away.
+
+### Dam projection
+
+The **Show Dam** button overlays the board with the cheapest dam the current position allows, and
+the territory that dam would produce. It's available during play, in the scoring and finished
+states, and in replays.
+
+It works by finding the cheapest line of cubes crossing the board from the left edge to the right
+edge. Steps go to any of the eight neighbouring squares, since a diagonal chain seals just as well
+as a straight one. Crossing an existing cube is free — of *either* colour, because any cube blocks
+the flood — while an empty square costs one **ghost block**, drawn as a dashed purple square. The
+line therefore threads through whatever structure is already on the board and bridges the gaps,
+and the number of ghosts is exactly how many cubes the dam still needs.
+
+The board is then scored as if those ghosts were real, which shades the projected territory either
+side of the line. Ghost blocks are occupied squares, so — like real cubes — they score for neither
+player.
+
+Reading it:
+
+| Overlay | Meaning |
+| ------- | ------- |
+| Purple dot on a cube | that cube is part of the cheapest dam |
+| Dashed purple square | a ghost block: a gap the dam still needs filling |
+| Pink / grey tints | territory each side would hold once the dam closes |
+
+Where ties exist the line prefers, in order, the fewest ghost blocks, then the shortest line, then
+the most central one — so an empty board shows a sensible midline rather than hugging a home row.
+
+The projection is deliberately optimistic: it assumes the dam closes. A position two blocks short
+of sealing can project Red 30 / Black 95 while the actual count is 0–0, because until the last gap
+closes every square is reachable by both players. The difference between the two numbers is what
+the dam is worth. It also tends to show that walls built too close to your own home row hand the
+opponent the larger half — a sealed line on row 8 splits the board 96–36 in Red's favour.
 
 ### Saved games
 

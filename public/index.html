@@ -79,6 +79,26 @@ h1 { margin-bottom: 8px; }
 .cell.home-black { background: #c8c8c8; }
 .cell.terr-red { background: #ffcdd2; }
 .cell.terr-black { background: #bdbdbd; }
+/* Dam projection: muted tints for the territory it would create... */
+.cell.proj-red { background: #eec4b8; }
+.cell.proj-black { background: #b9b5a6; }
+/* ...and an overlay layer for the line itself (::before is taken by group outlines) */
+.cell.dam-ghost::after, .cell.dam-link::after {
+  content: ''; position: absolute; inset: 0; z-index: 3; pointer-events: none;
+}
+.cell.dam-ghost::after {
+  background: rgba(123,31,162,0.22);
+  border: 2px dashed #7b1fa2;
+}
+.cell.dam-link::after {
+  background: radial-gradient(circle at 50% 50%, #e1bee7 0 26%, transparent 26%);
+}
+#dam-info {
+  margin-top: 8px;
+  font-size: 0.9em;
+  color: #6a1b9a;
+  min-height: 1.2em;
+}
 #controls {
   margin-top: 10px;
   min-height: 40px;
@@ -242,6 +262,7 @@ button:disabled { opacity: 0.4; cursor: default; }
       <div class="board-dot dot-right dot-black-line"></div>
     </div>
     <div id="controls"></div>
+    <div id="dam-info"></div>
     <div id="info">
       <b>How to play:</b> Place cubes on your home row or adjacent to cubes connected to it.
       Click your cubes to select a group and move it (the group slides N squares, where N = group size).
@@ -264,6 +285,7 @@ let board, currentPlayer, consecutivePasses, phase, selectedGroup, territoryMap,
 let mode = null;       // 'local' | 'online' | 'replay'
 let moveLog = [];
 let currentGameId = null;  // key under which this game's movelist is stored locally
+let showDam = false;       // dam projection overlay
 let lastMoveCells = new Set(); // cell IDs (r*SIZE+c) of the last placed/moved piece(s)
 // Replay state
 let replayMoves = [], replayIndex = 0, replaySnapshots = [], replayAutoTimer = null;
@@ -541,12 +563,14 @@ function doMoveLocal(group, dr, dc) {
   for (const [r, c] of group) board[r + dr * n][c + dc * n] = color;
 }
 
-function countTerritoryLocal() {
+// Scores `b`, defaulting to the live board. Any occupied square blocks the
+// flood and scores for nobody — including the dam projection's ghost blocks.
+function countTerritoryLocal(b = board) {
   function flood(homeRow) {
     const reached = new Set();
     const queue = [];
     for (let c = 0; c < SIZE; c++) {
-      if (!board[homeRow][c]) {
+      if (!b[homeRow][c]) {
         reached.add(homeRow * SIZE + c);
         queue.push([homeRow, c]);
       }
@@ -556,7 +580,7 @@ function countTerritoryLocal() {
       for (const [dr, dc] of DIRS) {
         const nr = cr + dr, nc = cc + dc;
         const id = nr * SIZE + nc;
-        if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && !reached.has(id) && !board[nr][nc]) {
+        if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && !reached.has(id) && !b[nr][nc]) {
           reached.add(id);
           queue.push([nr, nc]);
         }
@@ -576,6 +600,90 @@ function countTerritoryLocal() {
     if (!redReach.has(id)) { tMap[id] = 'black'; bs++; }
   }
   return { redScore: rs, blackScore: bs, map: tMap };
+}
+
+// ============================================================
+// Dam projection
+// ------------------------------------------------------------
+// Finds the cheapest line of cubes sealing the board from the left edge to the
+// right edge. Steps are king moves, because a diagonal chain of cubes still
+// blocks the orthogonal flood fill used for scoring. Any existing cube counts
+// towards the wall whichever colour it is — it blocks the flood just the same —
+// so crossing one is free, while an empty square costs one "ghost" block.
+// Scoring the board with those ghosts in place shows how the territory would
+// split once the dam closes. Ghosts are occupied squares, so they score for
+// nobody.
+// ============================================================
+const KING = [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
+// Three tiers, each dominating the next, so the cheaper ones only ever break
+// ties in the more important one: fewest ghost blocks, then the shortest line,
+// then the most central one (which stops an empty board picking a home row).
+// Each tier must outweigh the largest possible total of the tier below it over a
+// whole path, so the ordering can never be inverted by a long enough line.
+const CELLS = SIZE * SIZE;
+const centrality = r => Math.abs(2 * r - (SIZE - 1));   // 0 mid-board, 11 on a home row
+const STEP_COST = CELLS * centrality(0) + 1;            // outweighs all centrality
+const GHOST_COST = CELLS * (STEP_COST + centrality(0)) + 1;   // outweighs all length
+
+function findDamLine(b) {
+  const n = CELLS;
+  const dist = new Array(n).fill(Infinity);   // plain array: no overflow to reason about
+  const prev = new Int32Array(n).fill(-1);
+  const done = new Uint8Array(n);
+  const stepCost = (r, c) => (b[r][c] ? 0 : GHOST_COST) + STEP_COST + centrality(r);
+
+  for (let r = 0; r < SIZE; r++) dist[r * SIZE] = stepCost(r, 0);
+
+  // 144 nodes, so a linear-scan Dijkstra is plenty.
+  for (;;) {
+    let best = -1, bestD = Infinity;
+    for (let i = 0; i < n; i++) if (!done[i] && dist[i] < bestD) { bestD = dist[i]; best = i; }
+    if (best === -1) break;
+    done[best] = 1;
+    const r = (best / SIZE) | 0, c = best % SIZE;
+    if (c === SIZE - 1) break;   // reached the right edge; Dijkstra guarantees it's cheapest
+    for (const [dr, dc] of KING) {
+      const nr = r + dr, nc = c + dc;
+      if (nr < 0 || nr >= SIZE || nc < 0 || nc >= SIZE) continue;
+      const id = nr * SIZE + nc;
+      const nd = bestD + stepCost(nr, nc);
+      if (nd < dist[id]) { dist[id] = nd; prev[id] = best; }
+    }
+  }
+
+  let end = -1, endD = Infinity;
+  for (let r = 0; r < SIZE; r++) {
+    const id = r * SIZE + (SIZE - 1);
+    if (dist[id] < endD) { endD = dist[id]; end = id; }
+  }
+  if (end === -1) return null;
+
+  const path = [];
+  for (let id = end; id !== -1; id = prev[id]) path.push([(id / SIZE) | 0, id % SIZE]);
+  path.reverse();
+  const ghosts = path.filter(([r, c]) => !b[r][c]);
+  return { path, ghosts, count: ghosts.length };
+}
+
+function toggleDam() { showDam = !showDam; render(); }
+
+function renderDamInfo(dam) {
+  const el = document.getElementById('dam-info');
+  if (!dam) { el.textContent = ''; return; }
+  const gap = dam.count === 0
+    ? 'Dam is sealed'
+    : `${dam.count} block${dam.count === 1 ? '' : 's'} from sealing`;
+  el.textContent = `${gap} — projected territory: Red ${dam.redScore}, Black ${dam.blackScore}`;
+}
+
+// The dam line plus the territory split it would produce.
+function damProjection(b) {
+  const line = findDamLine(b);
+  if (!line) return null;
+  const projected = b.map(row => row.slice());
+  for (const [r, c] of line.ghosts) projected[r][c] = 'ghost';
+  const t = countTerritoryLocal(projected);
+  return { ...line, redScore: t.redScore, blackScore: t.blackScore, map: t.map };
 }
 
 // ============================================================
@@ -1106,6 +1214,14 @@ function render() {
   const selSet = new Set(selectedGroup.map(([r,c]) => r * SIZE + c));
   const tm = territoryMap || {};
 
+  // Dam projection. Once the game is over the real territory is known, so the
+  // line is still drawn but its projected tints step aside for the actual ones.
+  const dam = showDam ? damProjection(board) : null;
+  const damGhosts = new Set(dam ? dam.ghosts.map(([r,c]) => r * SIZE + c) : []);
+  const damPath = new Set(dam ? dam.path.map(([r,c]) => r * SIZE + c) : []);
+  const projMap = (dam && phase !== 'over') ? dam.map : null;
+  renderDamInfo(dam);
+
   boardEl.innerHTML = '';
   for (let r = 0; r < SIZE; r++) {
     for (let c = 0; c < SIZE; c++) {
@@ -1125,10 +1241,17 @@ function render() {
         cell.classList.add('move-target');
       } else if (vp.has(id)) {
         cell.classList.add('valid-place');
+      } else if (projMap && projMap[id] === 'red') {
+        cell.classList.add('proj-red');
+      } else if (projMap && projMap[id] === 'black') {
+        cell.classList.add('proj-black');
       } else if (!board[r][c]) {
         if (r === 0) cell.classList.add('home-red');
         else if (r === SIZE - 1) cell.classList.add('home-black');
       }
+
+      if (damGhosts.has(id)) cell.classList.add('dam-ghost');
+      else if (damPath.has(id)) cell.classList.add('dam-link');
 
       if (selSet.has(id)) {
         cell.classList.add('sel');
@@ -1189,6 +1312,10 @@ function render() {
     btn('Resume Play', onResume);
   } else if (phase === 'over') {
     btn(mode === 'online' ? 'Leave Game' : 'New Game', onNewGame);
+  }
+
+  if (mode && phase !== 'waiting') {
+    btn(showDam ? 'Hide Dam' : 'Show Dam', toggleDam);
   }
 
   // Show Movelist button for live games (replay mode has its own, above)
