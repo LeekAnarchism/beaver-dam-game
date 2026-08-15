@@ -99,6 +99,11 @@ h1 { margin-bottom: 8px; }
   color: #6a1b9a;
   min-height: 1.2em;
 }
+#ai-info {
+  font-size: 0.82em;
+  color: #777;
+  min-height: 1.1em;
+}
 #controls {
   margin-top: 10px;
   min-height: 40px;
@@ -212,10 +217,18 @@ button:disabled { opacity: 0.4; cursor: default; }
     <div class="player-id">Your ID: <b id="my-id"></b></div>
     <div id="lobby-menu">
       <button onclick="startLocal()">Local Multiplayer</button>
+      <button onclick="showAI()">Local vs AI</button>
       <button onclick="showHost()">Host Game</button>
       <button onclick="showJoin()">Join Game</button>
       <button onclick="showReplay()">Replay Game</button>
       <button onclick="showSaved()">Saved Games</button>
+    </div>
+    <div id="lobby-ai" style="display:none">
+      <p>You play <b style="color:#c62828">Red</b> and move first.</p>
+      <p>Difficulty: <select id="ai-level-lobby"></select></p>
+      <button onclick="startAI()" style="width:auto;display:inline-block">Start</button>
+      <button onclick="backToMenu()" style="width:auto;display:inline-block">Back</button>
+      <p style="font-size:0.85em;color:#666;margin-top:10px">Difficulty can be changed at any point during the game.</p>
     </div>
     <div id="lobby-host" style="display:none">
       <p>Waiting for opponent...</p>
@@ -263,6 +276,7 @@ button:disabled { opacity: 0.4; cursor: default; }
     </div>
     <div id="controls"></div>
     <div id="dam-info"></div>
+    <div id="ai-info"></div>
     <div id="info">
       <b>How to play:</b> Place cubes on your home row or adjacent to cubes connected to it.
       Click your cubes to select a group and move it (the group slides N squares, where N = group size).
@@ -282,10 +296,16 @@ const DIRS = [[0,1],[0,-1],[1,0],[-1,0]];
 const SIZE = 12;
 
 let board, currentPlayer, consecutivePasses, phase, selectedGroup, territoryMap, message, moveTargets;
-let mode = null;       // 'local' | 'online' | 'replay'
+let mode = null;       // 'local' | 'ai' | 'online' | 'replay'
 let moveLog = [];
 let currentGameId = null;  // key under which this game's movelist is stored locally
 let showDam = false;       // dam projection overlay
+
+// AI opponent. Level is read fresh on every request, so changing it mid-game
+// takes effect on the bot's next move.
+const AI_LEVELS = ['Beginner', 'Easy', 'Normal', 'Strong', 'Max'];
+const HUMAN_COLOUR = 'red', AI_COLOUR = 'black';
+let aiWorker = null, aiLevel = 2, aiThinking = false, aiReqId = 0, aiInfo = '';
 let lastMoveCells = new Set(); // cell IDs (r*SIZE+c) of the last placed/moved piece(s)
 // Replay state
 let replayMoves = [], replayIndex = 0, replaySnapshots = [], replayAutoTimer = null;
@@ -324,6 +344,113 @@ function backToMenu() {
   document.getElementById('lobby-join').style.display = 'none';
   document.getElementById('lobby-replay').style.display = 'none';
   document.getElementById('lobby-saved').style.display = 'none';
+  document.getElementById('lobby-ai').style.display = 'none';
+}
+
+// ============================================================
+// AI opponent
+// ============================================================
+function showAI() {
+  document.getElementById('lobby-menu').style.display = 'none';
+  document.getElementById('lobby-ai').style.display = '';
+  const sel = document.getElementById('ai-level-lobby');
+  sel.innerHTML = '';
+  AI_LEVELS.forEach((name, i) => {
+    const o = document.createElement('option');
+    o.value = i; o.textContent = name;
+    sel.appendChild(o);
+  });
+  sel.value = aiLevel;
+  sel.onchange = () => { aiLevel = +sel.value; };
+}
+
+function ensureAIWorker() {
+  if (aiWorker) return true;
+  try {
+    aiWorker = new Worker('ai-worker.js', { type: 'module' });
+    aiWorker.onmessage = (e) => {
+      if (e.data.id !== aiReqId) return;   // a stale reply from an abandoned game
+      aiInfo = e.data.reason
+        ? `AI: ${e.data.reason}`
+        : `AI (${e.data.level}): depth ${e.data.depth}, ${e.data.nodes.toLocaleString()} nodes, ${e.data.ms}ms`;
+      applyAIAction(e.data.action);
+    };
+    aiWorker.onerror = () => {
+      aiThinking = false;
+      aiInfo = 'AI failed to start — this browser may not support module workers.';
+      render();
+    };
+    return true;
+  } catch {
+    aiInfo = 'AI failed to start — this browser may not support module workers.';
+    return false;
+  }
+}
+
+function startAI() {
+  mode = 'ai';
+  aiInfo = '';
+  document.getElementById('lobby').classList.add('hidden');
+  document.getElementById('game-area').classList.remove('hidden');
+  ensureAIWorker();
+  resetGame('ai');
+}
+
+function boardToFlat() {
+  const arr = new Int8Array(SIZE * SIZE);
+  for (let r = 0; r < SIZE; r++) for (let c = 0; c < SIZE; c++) {
+    const v = board[r][c];
+    arr[r * SIZE + c] = v === 'red' ? 1 : v === 'black' ? 2 : 0;
+  }
+  return arr;
+}
+
+function maybeStartAI() {
+  if (mode !== 'ai' || phase !== 'play' || currentPlayer !== AI_COLOUR) return;
+  if (!ensureAIWorker()) return;
+  aiThinking = true;
+  const id = ++aiReqId;
+  render();
+  aiWorker.postMessage({
+    board: boardToFlat(),
+    stm: AI_COLOUR === 'red' ? 1 : 2,
+    passes: consecutivePasses,
+    level: aiLevel,
+    id,
+  });
+}
+
+// The AI's move is applied through exactly the same path as a human click, so
+// move recording, last-move highlighting and saved games all work unchanged.
+function applyAIAction(a) {
+  aiThinking = false;
+  if (mode !== 'ai' || phase !== 'play' || currentPlayer !== AI_COLOUR) { render(); return; }
+
+  if (a.kind === 'pass') {
+    recordMove(movePrefix() + ' X');
+    consecutivePasses++;
+    if (consecutivePasses >= 2) { phase = 'scoring'; render(); return; }
+    endTurnLocal();
+    return;
+  }
+
+  if (a.kind === 'place') {
+    recordMove(movePrefix() + ' P ' + a.r + ',' + a.c);
+    lastMoveCells = new Set([a.r * SIZE + a.c]);
+    board[a.r][a.c] = currentPlayer;
+    consecutivePasses = 0;
+    endTurnLocal();
+    return;
+  }
+
+  const group = getGroup(a.r, a.c);
+  if (!group.length) { render(); return; }
+  recordMove(movePrefix() + ' M ' + a.r + ',' + a.c + ',' + dirName(a.dr, a.dc));
+  const n = group.length;
+  lastMoveCells = new Set(group.map(([r, c]) => (r + a.dr * n) * SIZE + (c + a.dc * n)));
+  doMoveLocal(group, a.dr, a.dc);
+  consecutivePasses = 0;
+  endTurnLocal();
 }
 
 function startLocal() {
@@ -669,6 +796,8 @@ function toggleDam() { showDam = !showDam; render(); }
 
 function renderDamInfo(dam) {
   const el = document.getElementById('dam-info');
+  const ai = document.getElementById('ai-info');
+  if (ai) { ai.textContent = mode === 'ai' ? aiInfo : ''; }
   if (!dam) { el.textContent = ''; return; }
   const gap = dam.count === 0
     ? 'Dam is sealed'
@@ -689,7 +818,7 @@ function damProjection(b) {
 // ============================================================
 // Init
 // ============================================================
-function initLocal() {
+function resetGame(kind) {
   board = Array.from({length: SIZE}, () => Array(SIZE).fill(null));
   currentPlayer = 'red';
   consecutivePasses = 0;
@@ -700,15 +829,21 @@ function initLocal() {
   moveTargets = {};
   moveLog = [];
   lastMoveCells = new Set();
-  setCurrentGame('local-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
+  aiThinking = false;
+  aiReqId++;   // orphan any reply still in flight from the previous game
+  setCurrentGame(kind + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
   render();
+  maybeStartAI();
 }
+
+function initLocal() { resetGame('local'); }
 
 // ============================================================
 // Actions — branch on local vs online
 // ============================================================
 function isMyTurn() {
   if (mode === 'local') return true;
+  if (mode === 'ai') return currentPlayer === HUMAN_COLOUR && !aiThinking;
   if (mode === 'replay') return false;
   return myRole === currentPlayer;
 }
@@ -858,6 +993,7 @@ function onResume() {
 function endTurnLocal() {
   currentPlayer = currentPlayer === 'red' ? 'black' : 'red';
   render();
+  maybeStartAI();
 }
 
 function onNewGame() {
@@ -867,6 +1003,9 @@ function onNewGame() {
     history.replaceState(null, '', location.pathname);
   } else if (mode === 'replay') {
     showLobby();
+  } else if (mode === 'ai') {
+    aiInfo = '';
+    resetGame('ai');
   } else {
     initLocal();
   }
@@ -957,7 +1096,8 @@ function renderSavedGames() {
     when.textContent = new Date(g.updated).toLocaleString();
     const meta = document.createElement('div');
     meta.className = 'saved-meta';
-    const where = g.mode === 'online' ? (g.room ? 'Online (' + g.room + ')' : 'Online') : 'Local';
+    const where = g.mode === 'online' ? (g.room ? 'Online (' + g.room + ')' : 'Online')
+      : g.mode === 'ai' ? 'vs AI' : 'Local';
     meta.textContent = `${where} · ${g.moves.length} move${g.moves.length === 1 ? '' : 's'} · ${g.result || 'Unfinished'}`;
     info.appendChild(when);
     info.appendChild(meta);
@@ -1202,6 +1342,9 @@ function render() {
     let turnText = `${capitalize(currentPlayer)}'s turn`;
     if (mode === 'online') {
       turnText += isMyTurn() ? ' (you)' : ' (opponent)';
+    } else if (mode === 'ai') {
+      turnText += currentPlayer === HUMAN_COLOUR ? ' (you)'
+        : aiThinking ? ' — AI thinking…' : ' (AI)';
     }
     statusEl.textContent = turnText;
     statusEl.style.color = currentPlayer === 'red' ? '#c62828' : '#333';
@@ -1316,6 +1459,25 @@ function render() {
 
   if (mode && phase !== 'waiting') {
     btn(showDam ? 'Hide Dam' : 'Show Dam', toggleDam);
+  }
+
+  // Difficulty is sent with each request, so a change here applies from the
+  // AI's very next move — no restart needed.
+  if (mode === 'ai') {
+    const wrap = document.createElement('label');
+    wrap.style.cssText = 'margin-left:8px;font-size:0.9em;color:#555';
+    wrap.appendChild(document.createTextNode('AI: '));
+    const sel = document.createElement('select');
+    sel.style.cssText = 'padding:5px;font-size:0.9em;border:1px solid #aaa;border-radius:4px';
+    AI_LEVELS.forEach((name, i) => {
+      const o = document.createElement('option');
+      o.value = i; o.textContent = name;
+      sel.appendChild(o);
+    });
+    sel.value = aiLevel;
+    sel.addEventListener('change', () => { aiLevel = +sel.value; render(); });
+    wrap.appendChild(sel);
+    controlsEl.appendChild(wrap);
   }
 
   // Show Movelist button for live games (replay mode has its own, above)

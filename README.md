@@ -132,10 +132,11 @@ Local dev state is written to `.partykit/`; it is safe to delete and should not 
 
 ## Playing
 
-The lobby offers five options:
+The lobby offers six options:
 
 - **Local Multiplayer** — hot-seat on one screen, both sides played in the same browser tab. No
   server round-trip; the whole game runs client-side.
+- **Local vs AI** — play the computer. You are Red and move first.
 - **Host Game** — generates a six-character room code and a shareable invite link, then waits for
   an opponent. The host is assigned Red.
 - **Join Game** — enter a room code (or open an invite link, which pre-fills it). The joiner is
@@ -168,6 +169,40 @@ and an auto-play button. The format is one move per line:
 
 For online games the movelist is kept by the server and sent with every state update, so it stays
 complete across a reconnect and includes moves the opponent made while you were away.
+
+### Playing the AI
+
+**Local vs AI** puts you against a search engine running in a Web Worker, so the board stays
+responsive while it thinks. It's entirely client-side — online games are unaffected.
+
+**Difficulty can be changed at any point during a game**, from the dropdown next to the board. The
+level is sent with every request rather than fixed when the game starts, so a change takes effect
+on the AI's very next move. No restart, no lost position.
+
+| Level | Search depth | Budget | Move choice |
+| ----- | ------------ | ------ | ----------- |
+| Beginner | 1 | 0.2s | any move within 10 points of best |
+| Easy | 2 | 0.4s | within 5 points |
+| Normal | 3 | 0.8s | within 2 points |
+| Strong | 4 | 1.5s | best only |
+| Max | up to 8 | 2.5s | best only |
+
+Weaker levels don't play random blunders — they pick among moves close to the best, so the AI stays
+coherent and just misses the sharpest line. Under the board it reports the depth it reached, the
+nodes it searched and how long it took.
+
+Two things worth knowing about how it plays:
+
+- **Depth changes its character a lot.** At Normal it will often walk a single cube back and forth
+  rather than commit; at Max it builds properly, mirroring your wall and contesting the middle. If
+  the AI looks aimless, turn the difficulty up.
+- **It will accept an ending.** If you pass and the AI is not behind on the exact count, it passes
+  too, which sends the game to scoring. Without that you could never finish a game against it —
+  you'd pass, it would move, and the pass counter would reset forever. If it *is* behind, it plays
+  on rather than banking a loss.
+
+The AI's moves go through exactly the same code path as your clicks, so they're recorded in the
+movelist, highlighted as the last move, and saved for replay like any other game.
 
 ### Dam projection
 
@@ -243,7 +278,13 @@ lands at `https://beaver-dam-game.<your-partykit-username>.partykit.dev`.
 | ---------------------------------------- | ----------------------------------------------------------------------- |
 | [party/server.js](party/server.js)       | Authoritative game server: rules, validation, turn state, movelist, broadcasting |
 | [public/index.html](public/index.html)   | The entire client — lobby, board rendering, local rules engine, replay, saved games |
+| [public/engine.js](public/engine.js)     | AI search: alpha-beta with transposition table, PVS, killers, dam-projection eval |
+| [public/ai-worker.js](public/ai-worker.js) | Web Worker wrapper — difficulty levels and the AI's pass policy         |
 | [partykit.json](partykit.json)           | PartyKit project config                                                 |
 
-The rules are implemented twice — once on the server for online play, once in the client for
-local play and replay. Changing a rule means changing both.
+The rules exist in **three** places: `party/server.js` for online play, `public/index.html` for
+local play and replay, and `public/engine.js` for the AI. The third is deliberate — the search
+needs a flat typed-array board and make/unmake, which the readable rules code doesn't provide — but
+it means a rule change must land in all three. The engine is pinned to the canonical rules by a
+differential test that compares move generation, territory, dam projection, evaluation and
+make/unmake across thousands of positions; keep that passing when you touch the rules.

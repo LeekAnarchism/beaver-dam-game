@@ -137,6 +137,10 @@ function dirName(dr, dc) {
   return 'R';
 }
 
+// Exported so test/difftest.mjs can check the AI engine's own (faster, flatter)
+// implementation of the rules against these, which are the canonical ones.
+export { freshBoard, getGroup, connectedToHome, getValidPlacements, canMove, doMove, countTerritory, SIZE, DIRS };
+
 export default class GameServer {
   constructor(room) {
     this.room = room;

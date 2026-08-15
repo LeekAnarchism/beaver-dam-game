@@ -2,9 +2,11 @@
   "name": "beaver-dam-game",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "partykit dev",
-    "deploy": "partykit deploy"
+    "deploy": "partykit deploy",
+    "test": "node test/difftest.mjs"
   },
   "dependencies": {
     "partykit": "latest"
