@@ -126,7 +126,7 @@ Local dev state is written to `.partykit/`; it is safe to delete and should not 
 
 ## Playing
 
-The lobby offers four options:
+The lobby offers five options:
 
 - **Local Multiplayer** — hot-seat on one screen, both sides played in the same browser tab. No
   server round-trip; the whole game runs client-side.
@@ -135,6 +135,7 @@ The lobby offers four options:
 - **Join Game** — enter a room code (or open an invite link, which pre-fills it). The joiner is
   assigned Black. Anyone joining a full room watches as a spectator.
 - **Replay Game** — paste a movelist to step through a finished game.
+- **Saved Games** — every game played on this device, newest first, ready to replay.
 
 Each browser session gets a random player ID stored in `sessionStorage`. Reconnecting with the
 same ID reclaims your seat, so a refresh or a dropped connection does not forfeit the game — the
@@ -145,9 +146,9 @@ edited client cannot make an illegal one.
 
 ### Movelists and replays
 
-Local games record a movelist, viewable and copyable with the **Movelist** button. Paste one into
-**Replay Game** to step through it with `|<`, `<`, `>`, `>|` and an auto-play button. The format is
-one move per line:
+Every game — local *and* online — records a movelist, viewable and copyable with the **Movelist**
+button during play. Paste one into **Replay Game** to step through it with `|<`, `<`, `>`, `>|`
+and an auto-play button. The format is one move per line:
 
 | Notation      | Meaning                                                       |
 | ------------- | ------------------------------------------------------------- |
@@ -157,8 +158,26 @@ one move per line:
 | `B RESIGN`    | Black resigns                                                  |
 | `COUNT`       | Territory is counted and the game ends                         |
 | `DRAW`        | The game ends in a draw                                        |
+| `RESUME`      | Play resumes from scoring after two passes                     |
 
-Movelist recording is a local-game feature — online games do not currently produce one.
+For online games the movelist is kept by the server and sent with every state update, so it stays
+complete across a reconnect and includes moves the opponent made while you were away.
+
+### Saved games
+
+Games are saved to the browser's `localStorage` under the key `beaver-saved-games`, so you can
+look at them again later on the same device. Each entry holds the movelist, the date, whether the
+game was local or online (with the room code), and the result.
+
+Saving happens move by move rather than at the end, so a game you abandoned or one that was
+interrupted is kept too — it just shows as *Unfinished*. The **Saved Games** screen lists them
+newest first with a **Replay** button per game, a **×** to delete one, and **Clear All**.
+
+Two things worth knowing:
+
+- Storage is **per device and per browser**. Both players in an online game save their own copy;
+  the server does not keep games after a room shuts down.
+- The list is capped at the 50 most recent games; older ones drop off the end.
 
 ## Deploying
 
@@ -182,8 +201,8 @@ lands at `https://beaver-dam-game.<your-partykit-username>.partykit.dev`.
 
 | Path                                     | Purpose                                                                 |
 | ---------------------------------------- | ----------------------------------------------------------------------- |
-| [party/server.js](party/server.js)       | Authoritative game server: rules, validation, turn state, broadcasting  |
-| [public/index.html](public/index.html)   | The entire client — lobby, board rendering, local rules engine, replay  |
+| [party/server.js](party/server.js)       | Authoritative game server: rules, validation, turn state, movelist, broadcasting |
+| [public/index.html](public/index.html)   | The entire client — lobby, board rendering, local rules engine, replay, saved games |
 | [partykit.json](partykit.json)           | PartyKit project config                                                 |
 
 The rules are implemented twice — once on the server for online play, once in the client for

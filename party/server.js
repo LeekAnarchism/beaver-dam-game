@@ -126,6 +126,17 @@ function countTerritory(board) {
   return { redScore: rs, blackScore: bs, map: tMap };
 }
 
+function notationFor(player) {
+  return player === 'red' ? 'R' : 'B';
+}
+
+function dirName(dr, dc) {
+  if (dr === -1) return 'U';
+  if (dr === 1) return 'D';
+  if (dc === -1) return 'L';
+  return 'R';
+}
+
 export default class GameServer {
   constructor(room) {
     this.room = room;
@@ -136,6 +147,9 @@ export default class GameServer {
     this.consecutivePasses = 0;
     this.message = '';
     this.territoryMap = null;
+    this.moveLog = [];
+    // Identifies this game to clients so they can store its movelist locally.
+    this.gameId = Math.random().toString(36).slice(2, 10);
   }
 
   roleOf(playerId) {
@@ -158,6 +172,8 @@ export default class GameServer {
         territoryMap: this.territoryMap,
         players: this.players,
         playerRole: role,
+        moveLog: this.moveLog,
+        gameId: this.gameId,
       }));
     }
   }
@@ -211,7 +227,9 @@ export default class GameServer {
 
     // For resign, player doesn't need to be current player
     if (data.type === 'resign') {
+      if (this.phase === 'over') return;
       const winner = role === 'red' ? 'Black' : 'Red';
+      this.moveLog.push(`${notationFor(role)} RESIGN`);
       this.phase = 'over';
       this.message = `${role[0].toUpperCase() + role.slice(1)} resigns. ${winner} wins!`;
       this.broadcastState();
@@ -220,6 +238,7 @@ export default class GameServer {
 
     // Draw and count can be done by either player in scoring phase
     if (data.type === 'draw' && this.phase === 'scoring') {
+      this.moveLog.push('DRAW');
       this.phase = 'over';
       this.message = 'Game ended in a draw.';
       this.broadcastState();
@@ -227,6 +246,7 @@ export default class GameServer {
     }
 
     if (data.type === 'count' && this.phase === 'scoring') {
+      this.moveLog.push('COUNT');
       const res = countTerritory(this.board);
       this.territoryMap = res.map;
       this.phase = 'over';
@@ -238,6 +258,7 @@ export default class GameServer {
     }
 
     if (data.type === 'resume' && this.phase === 'scoring') {
+      this.moveLog.push('RESUME');
       this.phase = 'play';
       this.consecutivePasses = 0;
       this.broadcastState();
@@ -253,6 +274,7 @@ export default class GameServer {
       if (r < 0 || r >= SIZE || c < 0 || c >= SIZE) return;
       if (this.board[r][c]) return;
       if (!getValidPlacements(this.board, this.currentPlayer).has(r * SIZE + c)) return;
+      this.moveLog.push(`${notationFor(this.currentPlayer)} P ${r},${c}`);
       this.board[r][c] = this.currentPlayer;
       this.consecutivePasses = 0;
       this.endTurn();
@@ -269,6 +291,7 @@ export default class GameServer {
       const group = getGroup(this.board, r, c);
       if (!group.length) return;
       if (!canMove(this.board, group, dr, dc)) return;
+      this.moveLog.push(`${notationFor(this.currentPlayer)} M ${r},${c},${dirName(dr, dc)}`);
       doMove(this.board, group, dr, dc);
       this.consecutivePasses = 0;
       this.endTurn();
@@ -276,6 +299,7 @@ export default class GameServer {
     }
 
     if (data.type === 'pass') {
+      this.moveLog.push(`${notationFor(this.currentPlayer)} X`);
       this.consecutivePasses++;
       if (this.consecutivePasses >= 2) {
         this.phase = 'scoring';

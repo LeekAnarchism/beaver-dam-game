@@ -156,6 +156,30 @@ button:disabled { opacity: 0.4; cursor: default; }
   word-break: break-all;
 }
 
+/* Saved games */
+#saved-list {
+  max-width: 380px;
+  margin: 0 auto;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.saved-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+}
+.saved-item .saved-info { flex: 1; min-width: 0; }
+.saved-item .saved-when { font-size: 0.9em; }
+.saved-item .saved-meta { font-size: 0.8em; color: #666; }
+#lobby .saved-item button { display: inline-block; width: auto; margin: 0; padding: 5px 10px; }
+#saved-empty { color: #666; font-size: 0.9em; }
+
 #game-area.hidden, #lobby.hidden { display: none; }
 </style>
 </head>
@@ -171,6 +195,7 @@ button:disabled { opacity: 0.4; cursor: default; }
       <button onclick="showHost()">Host Game</button>
       <button onclick="showJoin()">Join Game</button>
       <button onclick="showReplay()">Replay Game</button>
+      <button onclick="showSaved()">Saved Games</button>
     </div>
     <div id="lobby-host" style="display:none">
       <p>Waiting for opponent...</p>
@@ -197,6 +222,13 @@ button:disabled { opacity: 0.4; cursor: default; }
       <button onclick="backToMenu()" style="width:auto;display:inline-block">Back</button>
       <p id="replay-error" style="color:#c62828;margin-top:8px;display:none"></p>
     </div>
+    <div id="lobby-saved" style="display:none">
+      <p>Games played on this device:</p>
+      <div id="saved-list"></div>
+      <p id="saved-empty" style="display:none">No saved games yet.</p>
+      <button onclick="clearSaved()" style="width:auto;display:inline-block">Clear All</button>
+      <button onclick="backToMenu()" style="width:auto;display:inline-block">Back</button>
+    </div>
   </div>
 
   <!-- Game -->
@@ -210,13 +242,15 @@ button:disabled { opacity: 0.4; cursor: default; }
       <div class="board-dot dot-right dot-black-line"></div>
     </div>
     <div id="controls"></div>
-    <div id="modal-overlay"><div id="modal"><p id="modal-msg"></p><div id="modal-btns"></div></div></div>
     <div id="info">
       <b>How to play:</b> Place cubes on your home row or adjacent to cubes connected to it.
       Click your cubes to select a group and move it (the group slides N squares, where N = group size).
       After two consecutive passes, count territory to determine the winner.
     </div>
   </div>
+
+  <!-- Shared modal: used from both the lobby and the game -->
+  <div id="modal-overlay"><div id="modal"><p id="modal-msg"></p><div id="modal-btns"></div></div></div>
 </div>
 
 <script>
@@ -229,6 +263,7 @@ const SIZE = 12;
 let board, currentPlayer, consecutivePasses, phase, selectedGroup, territoryMap, message, moveTargets;
 let mode = null;       // 'local' | 'online' | 'replay'
 let moveLog = [];
+let currentGameId = null;  // key under which this game's movelist is stored locally
 let lastMoveCells = new Set(); // cell IDs (r*SIZE+c) of the last placed/moved piece(s)
 // Replay state
 let replayMoves = [], replayIndex = 0, replaySnapshots = [], replayAutoTimer = null;
@@ -254,13 +289,10 @@ if (urlRoom) {
 function showLobby() {
   document.getElementById('lobby').classList.remove('hidden');
   document.getElementById('game-area').classList.add('hidden');
-  document.getElementById('lobby-menu').style.display = '';
-  document.getElementById('lobby-host').style.display = 'none';
-  document.getElementById('lobby-join').style.display = 'none';
-  document.getElementById('lobby-replay').style.display = 'none';
-  if (ws) { ws.close(); ws = null; }
+  backToMenu();
   myRole = null;
   mode = null;
+  setCurrentGame(null);
 }
 
 function backToMenu() {
@@ -269,6 +301,7 @@ function backToMenu() {
   document.getElementById('lobby-host').style.display = 'none';
   document.getElementById('lobby-join').style.display = 'none';
   document.getElementById('lobby-replay').style.display = 'none';
+  document.getElementById('lobby-saved').style.display = 'none';
 }
 
 function startLocal() {
@@ -380,6 +413,10 @@ function onServerState(data) {
   consecutivePasses = data.consecutivePasses;
   message = data.message || '';
   territoryMap = data.territoryMap;
+  // The server owns the movelist for online games — it stays complete even
+  // across a reconnect, or when the opponent moves while we're away.
+  moveLog = Array.isArray(data.moveLog) ? data.moveLog : [];
+  setCurrentGame(data.gameId ? 'online-' + data.gameId : null);
 
   // If game hasn't started (waiting for opponent)
   if (data.phase === 'waiting') {
@@ -555,6 +592,7 @@ function initLocal() {
   moveTargets = {};
   moveLog = [];
   lastMoveCells = new Set();
+  setCurrentGame('local-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
   render();
 }
 
@@ -706,7 +744,7 @@ function onCount() {
 
 function onResume() {
   if (mode === 'online') { sendAction({ type: 'resume' }); }
-  else { phase = 'play'; consecutivePasses = 0; render(); }
+  else { recordMove('RESUME'); phase = 'play'; consecutivePasses = 0; render(); }
 }
 
 function endTurnLocal() {
@@ -739,6 +777,108 @@ function dirName(dr, dc) {
   return 'R';
 }
 function recordMove(notation) { moveLog.push(notation); }
+
+// ============================================================
+// Saved games (localStorage)
+// ============================================================
+const STORAGE_KEY = 'beaver-saved-games';
+const MAX_SAVED_GAMES = 50;
+let lastSaveSig = '';  // avoids rewriting storage on renders that changed nothing
+
+function loadSavedGames() {
+  try {
+    const list = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+    return Array.isArray(list) ? list.filter(g => g && typeof g.id === 'string' && Array.isArray(g.moves)) : [];
+  } catch { return []; }
+}
+
+function writeSavedGames(list) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(list)); } catch {}
+}
+
+function setCurrentGame(id) {
+  if (id === currentGameId) return;
+  currentGameId = id;
+  lastSaveSig = '';
+}
+
+// Called from render(), so the stored movelist tracks the live game move by move —
+// an abandoned or interrupted game is kept just as a finished one is.
+function saveCurrentGame() {
+  if (mode === 'replay' || !currentGameId || !moveLog.length) return;
+  const sig = moveLog.length + '|' + phase + '|' + message;
+  if (sig === lastSaveSig) return;
+  lastSaveSig = sig;
+
+  const list = loadSavedGames();
+  const idx = list.findIndex(g => g.id === currentGameId);
+  const entry = {
+    id: currentGameId,
+    mode,
+    room: mode === 'online' ? currentRoomCode : null,
+    started: idx >= 0 ? list[idx].started : Date.now(),
+    updated: Date.now(),
+    result: phase === 'over' ? message : '',
+    moves: moveLog.slice(),
+  };
+  if (idx >= 0) list.splice(idx, 1);
+  list.unshift(entry);
+  writeSavedGames(list.slice(0, MAX_SAVED_GAMES));
+}
+
+function showSaved() {
+  document.getElementById('lobby-menu').style.display = 'none';
+  document.getElementById('lobby-saved').style.display = '';
+  renderSavedGames();
+}
+
+function renderSavedGames() {
+  const listEl = document.getElementById('saved-list');
+  const games = loadSavedGames();
+  listEl.innerHTML = '';
+  document.getElementById('saved-empty').style.display = games.length ? 'none' : '';
+
+  for (const g of games) {
+    const item = document.createElement('div');
+    item.className = 'saved-item';
+
+    const info = document.createElement('div');
+    info.className = 'saved-info';
+    const when = document.createElement('div');
+    when.className = 'saved-when';
+    when.textContent = new Date(g.updated).toLocaleString();
+    const meta = document.createElement('div');
+    meta.className = 'saved-meta';
+    const where = g.mode === 'online' ? (g.room ? 'Online (' + g.room + ')' : 'Online') : 'Local';
+    meta.textContent = `${where} · ${g.moves.length} move${g.moves.length === 1 ? '' : 's'} · ${g.result || 'Unfinished'}`;
+    info.appendChild(when);
+    info.appendChild(meta);
+    item.appendChild(info);
+
+    const replayBtn = document.createElement('button');
+    replayBtn.textContent = 'Replay';
+    replayBtn.addEventListener('click', () => startReplay(g.moves.slice()));
+    item.appendChild(replayBtn);
+
+    const delBtn = document.createElement('button');
+    delBtn.textContent = '×';
+    delBtn.title = 'Delete';
+    delBtn.addEventListener('click', () => {
+      writeSavedGames(loadSavedGames().filter(x => x.id !== g.id));
+      renderSavedGames();
+    });
+    item.appendChild(delBtn);
+
+    listEl.appendChild(item);
+  }
+}
+
+function clearSaved() {
+  confirmDialog('Delete all saved games on this device?', () => {
+    writeSavedGames([]);
+    renderSavedGames();
+  });
+}
 
 function showMovelist() {
   const overlay = document.getElementById('modal-overlay');
@@ -779,13 +919,19 @@ function doReplay() {
     document.getElementById('replay-error').style.display = '';
     return;
   }
-  replayMoves = text.split('\n').map(l => l.trim()).filter(l => l);
-  if (!replayMoves.length) {
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l);
+  if (!lines.length) {
     document.getElementById('replay-error').textContent = 'No moves found.';
     document.getElementById('replay-error').style.display = '';
     return;
   }
+  startReplay(lines);
+}
+
+function startReplay(lines) {
+  replayMoves = lines;
   mode = 'replay';
+  setCurrentGame(null);
   moveLog = replayMoves.slice();
   replayIndex = 0;
   replayAutoTimer = null;
@@ -817,6 +963,11 @@ function applyReplayMove(line) {
   if (parts[0] === 'DRAW') {
     phase = 'over';
     message = 'Game ended in a draw.';
+    return;
+  }
+  if (parts[0] === 'RESUME') {
+    phase = 'play';
+    consecutivePasses = 0;
     return;
   }
   if (parts[0] === 'COUNT') {
@@ -1040,10 +1191,12 @@ function render() {
     btn(mode === 'online' ? 'Leave Game' : 'New Game', onNewGame);
   }
 
-  // Show Movelist button for local games (not replay, not online)
-  if (mode === 'local' && moveLog.length > 0) {
+  // Show Movelist button for live games (replay mode has its own, above)
+  if (mode !== 'replay' && moveLog.length > 0) {
     btn('Movelist', showMovelist);
   }
+
+  saveCurrentGame();
 
   function btn(label, fn) {
     const b = document.createElement('button');
