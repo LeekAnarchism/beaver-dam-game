@@ -28,36 +28,54 @@ function refActions(board, player) {
   return acts;
 }
 
-// Independent reference for the dam line: plain Dijkstra, no heap, so a bug in
-// the engine's heap can't hide behind an identical bug here.
+// Independent reference for the dam line: written deliberately differently from
+// the engine (objects and a naive scan rather than typed arrays and a heap), so
+// a bug in the engine's implementation cannot hide behind an identical bug here.
 function refDamGhosts(board) {
-  const N = SIZE * SIZE;
-  const centrality = r => Math.abs(2 * r - (SIZE - 1));
-  const STEP = N * centrality(0) + 1;
-  const GH = N * (STEP + centrality(0)) + 1;
-  const cost = (r, c) => (board[r][c] ? 0 : GH) + STEP + centrality(r);
-  const dist = new Array(N).fill(Infinity), prev = new Array(N).fill(-1), done = new Array(N).fill(false);
-  for (let r = 0; r < SIZE; r++) dist[r * SIZE] = cost(r, 0);
+  const ORTH_STEP = 150, DIAG_STEP = 225, BASE = 1000, RAMP = 500, CENT = 5, MAXRUN = SIZE;
+  const cent = r => CENT * Math.abs(2 * r - (SIZE - 1));
+  const gcost = (k, diag) => { const b = BASE + (k - 1) * RAMP; return diag ? (b * 3) / 2 : b; };
+  const key = (r, c, run) => `${r},${c},${run}`;
+
+  const dist = new Map(), prev = new Map(), done = new Set();
+  for (let r = 0; r < SIZE; r++) {
+    const occ = !!board[r][0];
+    dist.set(key(r, 0, occ ? 0 : 1), ORTH_STEP + cent(r) + (occ ? 0 : gcost(1, false)));
+  }
+
   for (;;) {
-    let best = -1, bd = Infinity;
-    for (let i = 0; i < N; i++) if (!done[i] && dist[i] < bd) { bd = dist[i]; best = i; }
-    if (best === -1) break;
-    done[best] = true;
-    const r = (best / SIZE) | 0, c = best % SIZE;
-    if (c === SIZE - 1) break;
+    let best = null, bd = Infinity;
+    for (const [k, v] of dist) if (!done.has(k) && v < bd) { bd = v; best = k; }
+    if (best === null) break;
+    done.add(best);
+    const [br, bc, brun] = best.split(',').map(Number);
+    if (bc === SIZE - 1) break;
     for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
       if (!dr && !dc) continue;
-      const nr = r + dr, nc = c + dc;
+      const nr = br + dr, nc = bc + dc;
       if (nr < 0 || nr >= SIZE || nc < 0 || nc >= SIZE) continue;
-      const id = nr * SIZE + nc, nd = bd + cost(nr, nc);
-      if (nd < dist[id]) { dist[id] = nd; prev[id] = best; }
+      const diag = dr !== 0 && dc !== 0;
+      const occ = !!board[nr][nc];
+      const run = occ ? 0 : Math.min(brun + 1, MAXRUN);
+      const k = key(nr, nc, run);
+      if (done.has(k)) continue;
+      const nd = bd + (diag ? DIAG_STEP : ORTH_STEP) + cent(nr) + (occ ? 0 : gcost(brun + 1, diag));
+      if (nd < (dist.has(k) ? dist.get(k) : Infinity)) { dist.set(k, nd); prev.set(k, best); }
     }
   }
-  let end = -1, ed = Infinity;
-  for (let r = 0; r < SIZE; r++) { const i = r * SIZE + (SIZE - 1); if (dist[i] < ed) { ed = dist[i]; end = i; } }
-  if (end === -1 || ed === Infinity) return null;
+
+  let end = null, ed = Infinity;
+  for (let r = 0; r < SIZE; r++) for (let run = 0; run <= MAXRUN; run++) {
+    const k = key(r, SIZE - 1, run);
+    if (dist.has(k) && dist.get(k) < ed) { ed = dist.get(k); end = k; }
+  }
+  if (end === null) return null;
+
   const ghosts = [];
-  for (let i = end; i !== -1; i = prev[i]) if (!board[(i / SIZE) | 0][i % SIZE]) ghosts.push(i);
+  for (let k = end; k !== undefined; k = prev.get(k)) {
+    const [r, c] = k.split(',').map(Number);
+    if (!board[r][c]) ghosts.push(r * SIZE + c);
+  }
   return ghosts.sort((a, b) => a - b);
 }
 

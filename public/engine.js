@@ -302,93 +302,136 @@ export function countTerritory(board) {
 }
 
 // ---------------------------------------------------------------- dam line
-// Same three-tier cost as the UI: fewest ghost blocks, then shortest line, then
-// most central. Binary heap instead of the UI's linear scan.
-const centrality = r => Math.abs(2 * r - (SIZE - 1));
-const STEP_COST = N * centrality(0) + 1;
-const GHOST_COST = N * (STEP_COST + centrality(0)) + 1;
-export { STEP_COST, GHOST_COST };
+// The cheapest line of cubes sealing left edge to right edge, in king steps.
+//
+// Costs are integers in thousandths of a "ghost" so the UI and the engine can
+// never drift apart through floating-point rounding. Three rules beyond plain
+// distance:
+//   - a ghost placed diagonally onward costs 1.5x: a diagonal bridge is thinner
+//     and more tenuous (crossing an EXISTING diagonal cube is still free, since
+//     a real diagonal chain seals perfectly well)
+//   - each further ghost in the same unbroken gap costs more than the last, so
+//     three 1-wide holes beat one 3-wide hole
+//   - ghosts and path length are commensurable (a ghost is worth ~7 steps)
+//     rather than strictly tiered, so the line will not detour across the board
+//     to pick up one stray cube and save a single ghost
+//
+// The run-length rule makes cost depend on the path, so the search runs over
+// (cell, length of the ghost run ending there) rather than cell alone.
+const centrality = r => Math.abs(2 * r - (SIZE - 1));   // 0 mid-board, 11 on a home row
+const STEP_ORTH = 150, STEP_DIAG = 225;
+const GHOST_BASE = 1000, GHOST_RAMP = 500;   // k-th ghost in a run: BASE + (k-1)*RAMP
+const CENT = 5;                              // faint pull to mid-board, breaks ties
+const MAX_RUN = SIZE;
+const RUNS = MAX_RUN + 1;
+const DSTATES = N * RUNS;
 
-const dist = new Float64Array(N), prev = new Int32Array(N), settled = new Int32Array(N);
-const heapNode = new Int32Array(N * 4), heapKey = new Float64Array(N * 4);
-let heapSize = 0;
-
-// Ties break on lower cell index, so equal-cost nodes settle in exactly the
-// order the UI's linear-scan Dijkstra settles them. Without this the two pick
-// different — equally cheap — dam lines, and the overlay would show the player a
-// different line from the one the bot is playing to.
-const heapLess = (a, b) =>
-  heapKey[a] < heapKey[b] || (heapKey[a] === heapKey[b] && heapNode[a] < heapNode[b]);
-
-function heapSwap(a, b) {
-  const tn = heapNode[a], tk = heapKey[a];
-  heapNode[a] = heapNode[b]; heapKey[a] = heapKey[b];
-  heapNode[b] = tn; heapKey[b] = tk;
-}
-
-function heapPush(node, key) {
-  let i = heapSize++;
-  heapNode[i] = node; heapKey[i] = key;
-  while (i > 0) {
-    const par = (i - 1) >> 1;
-    if (!heapLess(i, par)) break;
-    heapSwap(i, par);
-    i = par;
+const KING_DIAG = [];
+for (let i = 0; i < N; i++) {
+  const r = (i / SIZE) | 0, c = i % SIZE, flags = [];
+  for (const [dr, dc] of [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]]) {
+    const nr = r + dr, nc = c + dc;
+    if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE) flags.push(dr !== 0 && dc !== 0 ? 1 : 0);
   }
+  KING_DIAG.push(Uint8Array.from(flags));
 }
-function heapPop() {
-  const top = heapNode[0];
-  heapSize--;
-  if (heapSize > 0) {
-    heapNode[0] = heapNode[heapSize]; heapKey[0] = heapKey[heapSize];
+
+const ghostCost = (k, isDiag) => {
+  const base = GHOST_BASE + (k - 1) * GHOST_RAMP;   // always a multiple of 500
+  return isDiag ? (base * 3) / 2 : base;            // so the 1.5x stays an integer
+};
+
+const dDist = new Int32Array(DSTATES);
+const dPrev = new Int32Array(DSTATES);
+const dSettled = new Int32Array(DSTATES);
+const dHeapKey = new Int32Array(DSTATES * 8);
+const dHeapNode = new Int32Array(DSTATES * 8);
+let dHeapSize = 0;
+
+// Ties break on lower state index so the order is fully determined.
+const dLess = (a, b) =>
+  dHeapKey[a] < dHeapKey[b] || (dHeapKey[a] === dHeapKey[b] && dHeapNode[a] < dHeapNode[b]);
+function dSwap(a, b) {
+  const k = dHeapKey[a], n = dHeapNode[a];
+  dHeapKey[a] = dHeapKey[b]; dHeapNode[a] = dHeapNode[b];
+  dHeapKey[b] = k; dHeapNode[b] = n;
+}
+function dPush(node, key) {
+  let i = dHeapSize++;
+  dHeapNode[i] = node; dHeapKey[i] = key;
+  while (i > 0) { const p = (i - 1) >> 1; if (!dLess(i, p)) break; dSwap(i, p); i = p; }
+}
+function dPop() {
+  const top = dHeapNode[0];
+  dHeapSize--;
+  if (dHeapSize > 0) {
+    dHeapNode[0] = dHeapNode[dHeapSize]; dHeapKey[0] = dHeapKey[dHeapSize];
     let i = 0;
     for (;;) {
       const l = 2 * i + 1, r = l + 1;
       let m = i;
-      if (l < heapSize && heapLess(l, m)) m = l;
-      if (r < heapSize && heapLess(r, m)) m = r;
+      if (l < dHeapSize && dLess(l, m)) m = l;
+      if (r < dHeapSize && dLess(r, m)) m = r;
       if (m === i) break;
-      heapSwap(m, i);
-      i = m;
+      dSwap(m, i); i = m;
     }
   }
   return top;
 }
 
-// Writes the ghost squares into `ghosts`, returns how many.
+// Writes the ghost squares into `ghosts`, returns how many (-1 if unreachable).
 export function findDamGhosts(board, ghosts) {
-  const s = nextStamp();
-  heapSize = 0;
-  for (let i = 0; i < N; i++) { dist[i] = Infinity; prev[i] = -1; }
-  const stepCost = cell => (board[cell] ? 0 : GHOST_COST) + STEP_COST + centrality(rowOf(cell));
+  const stampNow = nextStamp();
+  dHeapSize = 0;
+  dDist.fill(0x7fffffff);
+  dPrev.fill(-1);
+
   for (let r = 0; r < SIZE; r++) {
-    const i = r * SIZE;
-    dist[i] = stepCost(i);
-    heapPush(i, dist[i]);
+    const cell = r * SIZE;
+    const cent = CENT * centrality(r);
+    const occupied = board[cell] !== EMPTY;
+    const cost = STEP_ORTH + cent + (occupied ? 0 : ghostCost(1, false));
+    const run = occupied ? 0 : 1;
+    const st = cell * RUNS + run;
+    if (cost < dDist[st]) { dDist[st] = cost; dPush(st, cost); }
   }
-  while (heapSize > 0) {
-    const cur = heapPop();
-    if (settled[cur] === s) continue;
-    settled[cur] = s;
-    if (cur % SIZE === SIZE - 1) break;
-    const nb = KING[cur];
+
+  while (dHeapSize > 0) {
+    const st = dPop();
+    if (dSettled[st] === stampNow) continue;
+    dSettled[st] = stampNow;
+    const cell = (st / RUNS) | 0;
+    if (cell % SIZE === SIZE - 1) break;
+    const run = st % RUNS, base = dDist[st];
+    const nb = KING[cell], flags = KING_DIAG[cell];
     for (let i = 0; i < nb.length; i++) {
-      const x = nb[i];
-      if (settled[x] === s) continue;
-      const nd = dist[cur] + stepCost(x);
-      if (nd < dist[x]) { dist[x] = nd; prev[x] = cur; heapPush(x, nd); }
+      const x = nb[i], isDiag = flags[i];
+      const occupied = board[x] !== EMPTY;
+      const nRun = occupied ? 0 : Math.min(run + 1, MAX_RUN);
+      const step = isDiag ? STEP_DIAG : STEP_ORTH;
+      const cost = base + step + CENT * centrality((x / SIZE) | 0) +
+        (occupied ? 0 : ghostCost(run + 1, isDiag));
+      const ns = x * RUNS + nRun;
+      if (dSettled[ns] === stampNow) continue;
+      if (cost < dDist[ns]) { dDist[ns] = cost; dPrev[ns] = st; dPush(ns, cost); }
     }
   }
-  // Mirror the UI exactly: scan the right column and take the strictly-smallest
-  // distance, so the lowest row wins a tie.
-  let end = -1, endD = Infinity;
+
+  let end = -1, endD = 0x7fffffff;
   for (let r = 0; r < SIZE; r++) {
-    const i = r * SIZE + (SIZE - 1);
-    if (dist[i] < endD) { endD = dist[i]; end = i; }
+    const cell = r * SIZE + (SIZE - 1);
+    for (let run = 0; run < RUNS; run++) {
+      const st = cell * RUNS + run;
+      if (dDist[st] < endD) { endD = dDist[st]; end = st; }
+    }
   }
-  if (end === -1 || endD === Infinity) return -1;
+  if (end === -1 || endD === 0x7fffffff) return -1;
+
   let n = 0;
-  for (let i = end; i !== -1; i = prev[i]) if (!board[i]) ghosts[n++] = i;
+  for (let st = end; st !== -1; st = dPrev[st]) {
+    const cell = (st / RUNS) | 0;
+    if (board[cell] === EMPTY) ghosts[n++] = cell;
+  }
   return n;
 }
 

@@ -215,9 +215,24 @@ states, and in replays.
 It works by finding the cheapest line of cubes crossing the board from the left edge to the right
 edge. Steps go to any of the eight neighbouring squares, since a diagonal chain seals just as well
 as a straight one. Crossing an existing cube is free — of *either* colour, because any cube blocks
-the flood — while an empty square costs one **ghost block**, drawn as a dashed purple square. The
-line therefore threads through whatever structure is already on the board and bridges the gaps,
-and the number of ghosts is exactly how many cubes the dam still needs.
+the flood — while an empty square costs a **ghost block**, drawn as a dashed purple square.
+
+Ghosts are not all priced the same, because the cheapest crossing is not always the *likeliest* dam:
+
+- **A ghost placed diagonally costs 1.5×.** A diagonal bridge is a thinner, more tenuous thing to
+  commit to. Crossing an *existing* diagonal cube is still free — a real diagonal chain seals
+  perfectly well; it's only bridging diagonally that's speculative.
+- **Each further ghost in the same unbroken gap costs more than the last**, so three separate
+  1-wide holes are preferred to one 3-wide hole. A small gap is far likelier to get plugged than
+  a big one.
+- **Ghosts and distance are commensurable** — one ghost is worth about seven steps of line. This is
+  what stops the projection wandering halfway across the board to pick up a stray cube and save a
+  single ghost. Previously the line would happily run a long diagonal from a lone home-row block up
+  to a bar in the middle, which is not a dam anyone would actually build.
+
+Because of that last rule the drawn line is the most **plausible** dam rather than strictly the
+cheapest one, so its ghost count can occasionally be one higher than the bare theoretical minimum.
+That's deliberate: a line you might really build is more useful than one you wouldn't.
 
 The board is then scored as if those ghosts were real, which shades the projected territory either
 side of the line. Ghost blocks are occupied squares, so — like real cubes — they score for neither

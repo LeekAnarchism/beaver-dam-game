@@ -742,51 +742,86 @@ function countTerritoryLocal(b = board) {
 // nobody.
 // ============================================================
 const KING = [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
-// Three tiers, each dominating the next, so the cheaper ones only ever break
-// ties in the more important one: fewest ghost blocks, then the shortest line,
-// then the most central one (which stops an empty board picking a home row).
-// Each tier must outweigh the largest possible total of the tier below it over a
-// whole path, so the ordering can never be inverted by a long enough line.
+// Costs are integers in thousandths of a "ghost", so this and the AI engine in
+// engine.js can never disagree through floating-point rounding. Three rules
+// beyond plain distance:
+//   - a ghost placed diagonally onward costs 1.5x, because a diagonal bridge is
+//     thinner and more tenuous. Crossing an EXISTING diagonal cube is still
+//     free — a real diagonal chain seals perfectly well.
+//   - each further ghost in the same unbroken gap costs more than the last, so
+//     three 1-wide holes are preferred to one 3-wide hole
+//   - ghosts and path length are commensurable (a ghost is worth ~7 steps), so
+//     the line will not wander across the board to pick up one stray cube and
+//     save a single ghost
+// The run-length rule makes cost depend on the path so far, so the search runs
+// over (cell, length of the ghost run ending there) rather than cell alone.
 const CELLS = SIZE * SIZE;
 const centrality = r => Math.abs(2 * r - (SIZE - 1));   // 0 mid-board, 11 on a home row
-const STEP_COST = CELLS * centrality(0) + 1;            // outweighs all centrality
-const GHOST_COST = CELLS * (STEP_COST + centrality(0)) + 1;   // outweighs all length
+const STEP_ORTH = 150, STEP_DIAG = 225;
+const GHOST_BASE = 1000, GHOST_RAMP = 500;
+const CENT = 5;
+const MAX_RUN = SIZE, RUNS = MAX_RUN + 1;
+
+function ghostCost(k, isDiag) {
+  const base = GHOST_BASE + (k - 1) * GHOST_RAMP;   // always a multiple of 500
+  return isDiag ? (base * 3) / 2 : base;            // so the 1.5x stays an integer
+}
 
 function findDamLine(b) {
-  const n = CELLS;
-  const dist = new Array(n).fill(Infinity);   // plain array: no overflow to reason about
-  const prev = new Int32Array(n).fill(-1);
-  const done = new Uint8Array(n);
-  const stepCost = (r, c) => (b[r][c] ? 0 : GHOST_COST) + STEP_COST + centrality(r);
+  const S = CELLS * RUNS;
+  const dist = new Int32Array(S).fill(0x7fffffff);
+  const prev = new Int32Array(S).fill(-1);
+  const done = new Uint8Array(S);
+  const occupied = cell => !!b[(cell / SIZE) | 0][cell % SIZE];
 
-  for (let r = 0; r < SIZE; r++) dist[r * SIZE] = stepCost(r, 0);
+  for (let r = 0; r < SIZE; r++) {
+    const cell = r * SIZE;
+    const occ = occupied(cell);
+    const cost = STEP_ORTH + CENT * centrality(r) + (occ ? 0 : ghostCost(1, false));
+    const st = cell * RUNS + (occ ? 0 : 1);
+    if (cost < dist[st]) dist[st] = cost;
+  }
 
-  // 144 nodes, so a linear-scan Dijkstra is plenty.
+  // 1872 states, so a linear-scan Dijkstra is still plenty and keeps the tie
+  // ordering trivially deterministic (lowest state index wins).
   for (;;) {
-    let best = -1, bestD = Infinity;
-    for (let i = 0; i < n; i++) if (!done[i] && dist[i] < bestD) { bestD = dist[i]; best = i; }
+    let best = -1, bestD = 0x7fffffff;
+    for (let i = 0; i < S; i++) if (!done[i] && dist[i] < bestD) { bestD = dist[i]; best = i; }
     if (best === -1) break;
     done[best] = 1;
-    const r = (best / SIZE) | 0, c = best % SIZE;
-    if (c === SIZE - 1) break;   // reached the right edge; Dijkstra guarantees it's cheapest
+    const cell = (best / RUNS) | 0;
+    if (cell % SIZE === SIZE - 1) break;
+    const run = best % RUNS;
+    const r = (cell / SIZE) | 0, c = cell % SIZE;
     for (const [dr, dc] of KING) {
       const nr = r + dr, nc = c + dc;
       if (nr < 0 || nr >= SIZE || nc < 0 || nc >= SIZE) continue;
-      const id = nr * SIZE + nc;
-      const nd = bestD + stepCost(nr, nc);
-      if (nd < dist[id]) { dist[id] = nd; prev[id] = best; }
+      const x = nr * SIZE + nc;
+      const isDiag = dr !== 0 && dc !== 0;
+      const occ = !!b[nr][nc];
+      const nRun = occ ? 0 : Math.min(run + 1, MAX_RUN);
+      const nd = bestD + (isDiag ? STEP_DIAG : STEP_ORTH) + CENT * centrality(nr) +
+        (occ ? 0 : ghostCost(run + 1, isDiag));
+      const ns = x * RUNS + nRun;
+      if (!done[ns] && nd < dist[ns]) { dist[ns] = nd; prev[ns] = best; }
     }
   }
 
-  let end = -1, endD = Infinity;
+  let end = -1, endD = 0x7fffffff;
   for (let r = 0; r < SIZE; r++) {
-    const id = r * SIZE + (SIZE - 1);
-    if (dist[id] < endD) { endD = dist[id]; end = id; }
+    const cell = r * SIZE + (SIZE - 1);
+    for (let run = 0; run < RUNS; run++) {
+      const st = cell * RUNS + run;
+      if (dist[st] < endD) { endD = dist[st]; end = st; }
+    }
   }
-  if (end === -1) return null;
+  if (end === -1 || endD === 0x7fffffff) return null;
 
   const path = [];
-  for (let id = end; id !== -1; id = prev[id]) path.push([(id / SIZE) | 0, id % SIZE]);
+  for (let st = end; st !== -1; st = prev[st]) {
+    const cell = (st / RUNS) | 0;
+    path.push([(cell / SIZE) | 0, cell % SIZE]);
+  }
   path.reverse();
   const ghosts = path.filter(([r, c]) => !b[r][c]);
   return { path, ghosts, count: ghosts.length };
