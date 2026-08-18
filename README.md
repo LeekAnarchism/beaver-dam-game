@@ -196,10 +196,12 @@ Two things worth knowing about how it plays:
 - **Depth changes its character a lot.** At Normal it will often walk a single cube back and forth
   rather than commit; at Max it builds properly, mirroring your wall and contesting the middle. If
   the AI looks aimless, turn the difficulty up.
-- **It will accept an ending.** If you pass and the AI is not behind on the exact count, it passes
-  too, which sends the game to scoring. Without that you could never finish a game against it —
-  you'd pass, it would move, and the pass counter would reset forever. If it *is* behind, it plays
-  on rather than banking a loss.
+- **It will accept an ending.** If you pass, the AI passes back whenever it is either not behind on
+  the exact count, or behind with no move left that could improve its score. Without that you could
+  never finish a game against it — you'd pass, it would move, and the pass counter would reset
+  forever. It only plays on if it is behind *and* still has something to play for.
+- **It won't shuffle.** The AI refuses moves that recreate a position it has already been in, so a
+  dead position produces varied play or a pass rather than the same two moves forever.
 
 The AI's moves go through exactly the same code path as your clicks, so they're recorded in the
 movelist, highlighted as the last move, and saved for replay like any other game.
@@ -279,7 +281,8 @@ lands at `https://beaver-dam-game.<your-partykit-username>.partykit.dev`.
 | [party/server.js](party/server.js)       | Authoritative game server: rules, validation, turn state, movelist, broadcasting |
 | [public/index.html](public/index.html)   | The entire client — lobby, board rendering, local rules engine, replay, saved games |
 | [public/engine.js](public/engine.js)     | AI search: alpha-beta with transposition table, PVS, killers, dam-projection eval |
-| [public/ai-worker.js](public/ai-worker.js) | Web Worker wrapper — difficulty levels and the AI's pass policy         |
+| [public/ai-worker.js](public/ai-worker.js) | Web Worker wrapper — difficulty levels, pass policy, repetition avoidance |
+| [test/](test)                            | `npm test` — engine vs canonical rules, and AI endgame behaviour        |
 | [partykit.json](partykit.json)           | PartyKit project config                                                 |
 
 The rules exist in **three** places: `party/server.js` for online play, `public/index.html` for

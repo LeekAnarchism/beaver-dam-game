@@ -831,6 +831,8 @@ function resetGame(kind) {
   lastMoveCells = new Set();
   aiThinking = false;
   aiReqId++;   // orphan any reply still in flight from the previous game
+  // Clear the bot's repetition history so a new game doesn't inherit the last one's.
+  if (aiWorker) aiWorker.postMessage({ type: 'reset' });
   setCurrentGame(kind + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
   render();
   maybeStartAI();

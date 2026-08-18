@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "partykit dev",
     "deploy": "partykit deploy",
-    "test": "node test/difftest.mjs"
+    "test": "node test/difftest.mjs && node test/ai-endgame.mjs"
   },
   "dependencies": {
     "partykit": "latest"
